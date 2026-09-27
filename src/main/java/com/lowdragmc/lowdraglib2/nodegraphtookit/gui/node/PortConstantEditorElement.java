@@ -1,12 +1,15 @@
 package com.lowdragmc.lowdraglib2.nodegraphtookit.gui.node;
 
+import com.lowdragmc.lowdraglib2.gui.ui.Style;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.port.PortDirection;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.api.port.PortOrientation;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.type.TypeHandle;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.FieldValueInspector;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.ModelElement;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.dependency.ModelUpdateVisitor;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.PortModel;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.WirePortalModel;
+import dev.vfyjxf.taffy.style.TaffyDisplay;
 import lombok.Getter;
 import org.jetbrains.annotations.Nullable;
 
@@ -23,6 +26,7 @@ public class PortConstantEditorElement extends ModelElement {
 
     public PortConstantEditorElement(PortModel portModel) {
         this.portModel = portModel;
+        addClass("__port-constant-editor__");
     }
 
     /**
@@ -30,13 +34,19 @@ public class PortConstantEditorElement extends ModelElement {
      */
     protected boolean isPortRequireEditor() {
         var isPortal = portModel.getNodeModel() instanceof WirePortalModel;
-        return portModel.getDirection() == PortDirection.INPUT && !isPortal;
+        if (portModel.getDirection() != PortDirection.INPUT || isPortal) return false;
+        // Vertical ports default to no inline configurator; the host graph can opt back in.
+        if (portModel.getOrientation() == PortOrientation.Vertical) {
+            var gm = portModel.getGraphModel();
+            return gm != null && gm.showVerticalPortConfigurator();
+        }
+        return true;
     }
 
     @Override
     protected void buildUI() {
         super.buildUI();
-        getLayout().flexGrow(1);
+        Style.defaultPipeline(getLayout(), l -> l.flexGrow(1));
         if (isPortRequireEditor()) {
             buildConstantEditor();
         }
@@ -60,7 +70,11 @@ public class PortConstantEditorElement extends ModelElement {
                 if (portModel.getDirection() == PortDirection.INPUT && portModel.getEmbeddedValue() != null) {
                     lastDataType = portModel.getEmbeddedValue().getTypeHandle();
                     editor = new FieldValueInspector();
+                    if (getGraphView() != null) editor.setHistoryStack(getGraphView().getHistoryStack());
                     editor.loadValueField(portModel);
+                    // Set here as well as in updateUIFromModel: a freshly built editor is on screen and
+                    // typeable from the moment it is added, before any model update runs.
+                    editor.setActive(!isGraphReadOnly());
                     addChild(editor);
                 }
             }
@@ -106,11 +120,14 @@ public class PortConstantEditorElement extends ModelElement {
 //                    }
 //                }
                 }
-                editor.setActive(!ancestorIsConnected && !allSubPortsConnected);
+                // A constant editor writes into the port's embedded value directly, not through a
+                // command, so read-only is enforced here rather than by dispatchCommand.
+                editor.setActive(!isGraphReadOnly() && !ancestorIsConnected && !allSubPortsConnected);
             }
-            this.setDisplay(!hideEditor);
+            // Hide editor when port is connected (data-driven) — pin via IMPORTANT.
+            Style.importantPipeline(getLayout(), l -> l.display(hideEditor ? TaffyDisplay.NONE : TaffyDisplay.FLEX));
         } else {
-            this.setDisplay(false);
+            Style.importantPipeline(getLayout(), l -> l.display(TaffyDisplay.NONE));
         }
     }
 }

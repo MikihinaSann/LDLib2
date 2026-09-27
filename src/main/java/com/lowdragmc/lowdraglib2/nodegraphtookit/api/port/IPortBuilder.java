@@ -1,5 +1,6 @@
 package com.lowdragmc.lowdraglib2.nodegraphtookit.api.port;
 
+import com.lowdragmc.lowdraglib2.gui.ui.data.Tooltips;
 import net.minecraft.network.chat.Component;
 
 /**
@@ -37,6 +38,19 @@ public interface IPortBuilder<T extends IPortBuilder<T>> {
     T withDisplayName(Component displayName);
 
     /**
+     * Configures authored tooltips for the port being built, replacing the generated
+     * {@code "name (type)"} one.
+     *
+     * <p>The counterpart of {@code IOptionBuilder#withTooltips}, which a node has always had: a
+     * port's meaning is no more self-evident than an option's, and without this the only place to
+     * say what one is for was the port's own label — where it does not fit.</p>
+     *
+     * @param tooltips the tooltips to show when the port is hovered
+     * @return the current builder instance for method chaining
+     */
+    T withTooltips(Tooltips tooltips);
+
+    /**
      * Configures the connector UI shape for the port being built.
      *
      * <p>Use this method to control the appearance of the port's connector in the UI. The {@link PortConnectorUI} enum
@@ -49,6 +63,17 @@ public interface IPortBuilder<T extends IPortBuilder<T>> {
      * @return the current builder instance for method chaining
      */
     T withConnectorUI(PortConnectorUI connectorUI);
+
+    /**
+     * Configures the orientation of the port being built. {@link PortOrientation#Horizontal}
+     * (default) places the port in the node's side in/out columns; {@link PortOrientation#Vertical}
+     * places it in the top (inputs) / bottom (outputs) rows rendered above the title and below the
+     * body (see {@code CollapsibleInOutNodeElement}). UI-only — does not affect connectivity.
+     *
+     * @param orientation the {@link PortOrientation} to use
+     * @return the current builder instance for method chaining
+     */
+    T withOrientation(PortOrientation orientation);
 
     /**
      * Configures the default value for the option being built.

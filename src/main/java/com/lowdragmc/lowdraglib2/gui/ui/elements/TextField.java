@@ -13,6 +13,7 @@ import com.lowdragmc.lowdraglib2.configurator.ui.StringConfigurator;
 import com.lowdragmc.lowdraglib2.editor.ClipboardManager;
 import com.lowdragmc.lowdraglib2.gui.ColorPattern;
 import com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture;
+import com.lowdragmc.lowdraglib2.gui.LDLibFonts;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.event.CommandEvents;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvent;
@@ -30,6 +31,7 @@ import com.lowdragmc.lowdraglib2.syncdata.annotation.SkipPersistedValue;
 import com.lowdragmc.lowdraglib2.utils.HistoryStack;
 import com.lowdragmc.lowdraglib2.utils.TextUtilities;
 import com.lowdragmc.lowdraglib2.utils.XmlUtils;
+import com.lowdragmc.lowdraglib2.gui.ui.utils.KeyState;
 import com.mojang.blaze3d.systems.RenderSystem;
 import dev.vfyjxf.taffy.style.FlexDirection;
 import dev.vfyjxf.taffy.style.FlexWrap;
@@ -332,17 +334,17 @@ public class TextField extends BindableUIElement<String> {
         } else if (mode == Mode.NUMBER_FLOAT) {
             try {
                 if (numberInstance != null) {
-                    number = numberInstance.format(append ? (Float.parseFloat(getRawText()) + value * (isShiftDown() ? 10 : 1)) : (float) value);
+                    number = numberInstance.format(append ? (LocalizedNumberText.parseFloat(getRawText()) + value * (isShiftDown() ? 10 : 1)) : (float) value);
                 } else {
-                    number = String.valueOf(append ? (Float.parseFloat(getRawText()) + value * (isShiftDown() ? 10 : 1)) : (float) value);
+                    number = String.valueOf(append ? (LocalizedNumberText.parseFloat(getRawText()) + value * (isShiftDown() ? 10 : 1)) : (float) value);
                 }
             } catch (NumberFormatException ignored) { }
         }  else if (mode == Mode.NUMBER_DOUBLE) {
             try {
                 if (numberInstance != null) {
-                    number = numberInstance.format(append ? (Double.parseDouble(getRawText()) + value * (isShiftDown() ? 10 : 1)) : value);
+                    number = numberInstance.format(append ? (LocalizedNumberText.parseDouble(getRawText()) + value * (isShiftDown() ? 10 : 1)) : value);
                 } else {
-                    number = String.valueOf(append ? (Double.parseDouble(getRawText()) + value * (isShiftDown() ? 10 : 1)) : value);
+                    number = String.valueOf(append ? (LocalizedNumberText.parseDouble(getRawText()) + value * (isShiftDown() ? 10 : 1)) : value);
                 }
             } catch (NumberFormatException ignored) { }
         } else if (mode == Mode.NUMBER_SHORT) {
@@ -426,7 +428,7 @@ public class TextField extends BindableUIElement<String> {
                 if (isNumberField()) {
                     var startValue = 0d;
                     try {
-                        startValue = Double.parseDouble(getRawText());
+                        startValue = LocalizedNumberText.parseDouble(getRawText());
                     } catch (NumberFormatException ignored) {}
                     startDrag(new NumberStart(startValue), null);
                 } else {
@@ -436,7 +438,42 @@ public class TextField extends BindableUIElement<String> {
         }
     }
 
+    /**
+     * The keys a focused field <b>owns</b>: the ones it acts on below, and the ones that are about to
+     * type a character into it.
+     *
+     * <p>⚠️ Without this an ancestor's shortcut fires while the author is typing — the space bar both
+     * types a space and starts a timeline playing, Delete both deletes a character and deletes the
+     * selection behind the field, and the arrow keys both move the cursor and step a playhead. Every
+     * consumer would otherwise have to walk the focus chain looking for a text field, which is a
+     * guard each of them can forget.
+     *
+     * <p>What is deliberately <b>not</b> owned, so a container still hears it: chords (Ctrl/Alt —
+     * they are commands and arrive as {@code EXECUTE_COMMAND} anyway), Escape and Tab (dismiss and
+     * traverse), Enter (a field commits on it, and a dialog may take it as OK), and anything else
+     * this switch does not handle, F5 and friends included.
+     */
+    @Override
+    public boolean isTextInput() {
+        return isEditable();
+    }
+
+    @Override
+    public boolean ownsKey(UIEvent event) {
+        if (!isEditable() || event.isCtrlDown() || event.isAltDown()) {
+            return false;
+        }
+        return switch (event.keyCode) {
+            case GLFW.GLFW_KEY_BACKSPACE, GLFW.GLFW_KEY_DELETE, GLFW.GLFW_KEY_LEFT, GLFW.GLFW_KEY_RIGHT,
+                 GLFW.GLFW_KEY_HOME, GLFW.GLFW_KEY_END -> true;
+            default -> KeyState.isTextKey(event.keyCode);
+        };
+    }
+
     protected void onKeyDown(UIEvent event) {
+        if (ownsKey(event)) {
+            event.stopPropagation();
+        }
         switch (event.keyCode) {
             case GLFW.GLFW_KEY_BACKSPACE -> {
                 if (isEditable()) {
@@ -489,17 +526,17 @@ public class TextField extends BindableUIElement<String> {
                 }
             }
             default -> {
-                if (Screen.isSelectAll(event.keyCode)) {
+                if (KeyState.isSelectAll(event.keyCode)) {
                     setCursor(rawText.length());
                     setSelection(0, rawText.length());
-                } else if (Screen.isCopy(event.keyCode)) {
+                } else if (KeyState.isCopy(event.keyCode)) {
                     ClipboardManager.INSTANCE.copyDirect(this.getHighlighted());
-                } else if (Screen.isPaste(event.keyCode)) {
+                } else if (KeyState.isPaste(event.keyCode)) {
                     if (this.isEditable()) {
                         this.insertText(Minecraft.getInstance().keyboardHandler.getClipboard());
                     }
                 } else {
-                    if (Screen.isCut(event.keyCode)) {
+                    if (KeyState.isCut(event.keyCode)) {
                         ClipboardManager.INSTANCE.copyDirect(this.getHighlighted());
                         if (this.isEditable()) {
                             this.insertText("");
@@ -528,13 +565,22 @@ public class TextField extends BindableUIElement<String> {
     @Override
     public TextField setValue(@Nullable String value, boolean notify) {
         if (value == null) value = "";
+        var textValue = value;
         this.rawText = value;
         if (isNumberField() && numberInstance != null && !value.isEmpty()) {
             try {
                 switch (mode) {
                     case NUMBER_INT -> this.rawText = numberInstance.format(Integer.parseInt(value));
-                    case NUMBER_FLOAT -> this.rawText = numberInstance.format(Float.parseFloat(value));
-                    case NUMBER_DOUBLE -> this.rawText = numberInstance.format(Double.parseDouble(value));
+                    case NUMBER_FLOAT -> {
+                        var parsed = LocalizedNumberText.parseFloat(value);
+                        this.rawText = numberInstance.format(parsed);
+                        textValue = LocalizedNumberText.normalizeFloat(value);
+                    }
+                    case NUMBER_DOUBLE -> {
+                        var parsed = LocalizedNumberText.parseDouble(value);
+                        this.rawText = numberInstance.format(parsed);
+                        textValue = LocalizedNumberText.normalizeDouble(value);
+                    }
                     case NUMBER_BYTE ->  this.rawText = numberInstance.format(Byte.parseByte(value));
                     case NUMBER_SHORT ->  this.rawText = numberInstance.format(Short.parseShort(value));
                     case NUMBER_LONG ->  this.rawText = numberInstance.format(Long.parseLong(value));
@@ -543,8 +589,8 @@ public class TextField extends BindableUIElement<String> {
                 this.rawText = "";
             }
         }
-        if (!this.text.equals(value)) {
-            this.text = value;
+        if (!this.text.equals(textValue)) {
+            this.text = textValue;
             if (notify) {
                 notifyListeners();
             }
@@ -703,12 +749,12 @@ public class TextField extends BindableUIElement<String> {
         mode = Mode.NUMBER_FLOAT;
         setTextValidator(s -> {
             try {
-                float value = Float.parseFloat(s);
+                float value = LocalizedNumberText.parseFloat(s);
                 if (minValue <= value && value <= maxValue) return true;
             } catch (NumberFormatException ignored) { }
             return false;
         });
-        setCharValidator(chr -> chr == '.' || Character.isDigit(chr) || chr == '-' || chr == '+');
+        setCharValidator(LocalizedNumberText::isFloatingPointCharacter);
         if (minValue == -Float.MAX_VALUE && maxValue == Float.MAX_VALUE) {
             style(style -> style.tooltips(Component.translatable("ldlib.gui.text_field.number.3")));
         } else if (minValue == -Float.MAX_VALUE) {
@@ -725,12 +771,12 @@ public class TextField extends BindableUIElement<String> {
         mode = Mode.NUMBER_DOUBLE;
         setTextValidator(s -> {
             try {
-                var value = Double.parseDouble(s);
+                var value = LocalizedNumberText.parseDouble(s);
                 if (minValue <= value && value <= maxValue) return true;
             } catch (NumberFormatException ignored) { }
             return false;
         });
-        setCharValidator(chr -> chr == '.' || Character.isDigit(chr) || chr == '-' || chr == '+');
+        setCharValidator(LocalizedNumberText::isFloatingPointCharacter);
         if (minValue == -Double.MAX_VALUE && maxValue == Double.MAX_VALUE) {
             style(style -> style.tooltips(Component.translatable("ldlib.gui.text_field.number.3")));
         } else if (minValue == -Double.MAX_VALUE) {
@@ -778,7 +824,7 @@ public class TextField extends BindableUIElement<String> {
             return;
         }
         historyStack.record(getRawText());
-        if (Screen.hasControlDown()) {
+        if (KeyState.isCtrlDown()) {
             this.deleteWords(count);
         } else {
             this.deleteChars(count);
@@ -871,7 +917,7 @@ public class TextField extends BindableUIElement<String> {
         if (!LDLib2.isClient()) return;
         // Keep cursor inside viewport; prefer placing cursor at the right edge when scrolling
         var scale = textFieldStyle.fontSize() / getFont().lineHeight;
-        var cursorPosX = getFont().getSplitter().stringWidth(TextUtilities.withFont(rawText.substring(0, cursorPos), getTextFieldStyle().font())) * scale;
+        var cursorPosX = getFont().getSplitter().stringWidth(TextUtilities.truncateStyled(getStyledLine(), cursorPos)) * scale;
         var width = getContentWidth();
         float rightPad = 1f;
 
@@ -927,12 +973,25 @@ public class TextField extends BindableUIElement<String> {
         updateDisplayOffset();
         if (textValidator.test(rawText)) {
             isError = false;
-            if (!text.equals(rawText)) {
-                text = rawText;
+            var textValue = normalizeRawTextValue();
+            if (!text.equals(textValue)) {
+                text = textValue;
                 notifyListeners();
             }
         } else {
             isError = true;
+        }
+    }
+
+    private String normalizeRawTextValue() {
+        try {
+            return switch (mode) {
+                case NUMBER_FLOAT -> LocalizedNumberText.normalizeFloat(rawText);
+                case NUMBER_DOUBLE -> LocalizedNumberText.normalizeDouble(rawText);
+                default -> rawText;
+            };
+        } catch (NumberFormatException ignored) {
+            return rawText;
         }
     }
 
@@ -943,31 +1002,42 @@ public class TextField extends BindableUIElement<String> {
     public int getCursorUnderMouseX(double mouseX) {
         var x = getContentX();
         var font = getFont();
-        var textFont = textFieldStyle.font();
 
         var scale = textFieldStyle.fontSize() / font.lineHeight;
-        var availableWidth = ((mouseX - x + displayOffset) * scale);
+        // Mouse offset in rendered pixels. substrByWidth() expects unscaled/natural font pixels, so divide by
+        // scale for it; the half-character comparison below stays in rendered pixels (like subLength).
+        var mouseOffset = (float) (mouseX - x + displayOffset);
 
-        var lineWithFont = TextUtilities.withFont(rawText, textFont);
-        var subWithFont = font.substrByWidth(lineWithFont, (int) availableWidth);
-        float fullLength = font.getSplitter().stringWidth(lineWithFont) * scale;
+        var styledLine = getStyledLine();
+        var subWithFont = font.substrByWidth(styledLine, (int) (mouseOffset / scale));
+        float fullLength = font.getSplitter().stringWidth(styledLine) * scale;
         float subLength = font.getSplitter().stringWidth(subWithFont) * scale;
         int col;
         if (subLength >= fullLength) {
             col = rawText.length();
         } else {
-            var sub = subWithFont.getString();
-            float nextCharWidth = font.getSplitter().stringWidth(TextUtilities.withFont(rawText.substring(sub.length(), sub.length() + 1), textFont)) * scale;
-            col = (availableWidth - subLength) - nextCharWidth / 2f > 0 ? sub.length() + 1 : sub.length();
+            var subLen = subWithFont.getString().length();
+            float nextCharWidth = font.getSplitter().stringWidth(TextUtilities.truncateStyled(styledLine, subLen + 1)) * scale - subLength;
+            col = (mouseOffset - subLength) - nextCharWidth / 2f > 0 ? subLen + 1 : subLen;
         }
         return Mth.clamp(col, 0, rawText.length());
+    }
+
+    /**
+     * The rendered content of the text (formatter applied + font), used to measure caret/selection positions so
+     * that they stay aligned with what {@link #drawBackgroundAdditional} actually draws (including bold styling).
+     */
+    @Environment(EnvType.CLIENT)
+    public Component getStyledLine() {
+        var formattedText = formatter == null ? Component.literal(rawText) : formatter.apply(rawText);
+        return TextUtilities.withFont(formattedText, getTextFieldStyle().font());
     }
 
 
     /// rendering
     @Environment(EnvType.CLIENT)
     public Font getFont() {
-        return Minecraft.getInstance().font;
+        return LDLibFonts.font();
     }
 
     public Tuple<FormattedCharSequence, Float> getFormattedLine() {
@@ -1008,7 +1078,7 @@ public class TextField extends BindableUIElement<String> {
         var formattedLine = getFormattedLine();
         var font = getFont();
         var fontSize = textFieldStyle.fontSize();
-        var textFont = textFieldStyle.font();
+        var styledLine = getStyledLine();
         var scale = fontSize / font.lineHeight;
 
         var lineY = y + (height - fontSize) / 2;
@@ -1020,7 +1090,7 @@ public class TextField extends BindableUIElement<String> {
         guiContext.pose.pushPose();
         guiContext.pose.translate(lineX, lineY, 0);
         guiContext.pose.scale(scale, scale, 1);
-        guiContext.graphics.drawString(font, line, 0, 0, rawText.isEmpty() ?
+        LDLibFonts.drawText(guiContext.graphics, font, line, 0, 0, rawText.isEmpty() ?
                 ColorPattern.LIGHT_GRAY.color : (isError ? textFieldStyle.errorColor() : textFieldStyle.textColor()),
                 !rawText.isEmpty() && textFieldStyle.textShadow());
         guiContext.pose.popPose();
@@ -1030,8 +1100,8 @@ public class TextField extends BindableUIElement<String> {
         if (isFocused() && selectionStart != selectionEnd) {
             var min = Math.min(selectionStart, selectionEnd);
             var max = Math.max(selectionStart, selectionEnd);
-            var minX = font.getSplitter().stringWidth(TextUtilities.withFont(rawText.substring(0, min), textFont)) * scale - displayOffset;
-            var maxX = font.getSplitter().stringWidth(TextUtilities.withFont(rawText.substring(0, max), textFont)) * scale - displayOffset;
+            var minX = font.getSplitter().stringWidth(TextUtilities.truncateStyled(styledLine, min)) * scale - displayOffset;
+            var maxX = font.getSplitter().stringWidth(TextUtilities.truncateStyled(styledLine, max)) * scale - displayOffset;
             DrawerHelper.drawSolidRect(guiContext.graphics,
                     RenderType.guiTextHighlight(),
                     x + minX,
@@ -1040,7 +1110,7 @@ public class TextField extends BindableUIElement<String> {
                     fontSize, -16776961);
         }
         // draw cursor
-        var cursorPosX = font.getSplitter().stringWidth(TextUtilities.withFont(rawText.substring(0, cursorPos), textFont)) * scale;
+        var cursorPosX = font.getSplitter().stringWidth(TextUtilities.truncateStyled(styledLine, cursorPos)) * scale;
         if (isFocused() && System.currentTimeMillis() % 1000 < 500) {
             DrawerHelper.drawSolidRect(guiContext.graphics,
                     x + cursorPosX - displayOffset,

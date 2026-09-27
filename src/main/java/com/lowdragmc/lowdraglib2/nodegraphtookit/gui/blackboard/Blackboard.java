@@ -3,6 +3,7 @@ package com.lowdragmc.lowdraglib2.nodegraphtookit.gui.blackboard;
 import com.google.common.base.Predicates;
 import com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture;
 import com.lowdragmc.lowdraglib2.gui.texture.TextTexture;
+import com.lowdragmc.lowdraglib2.gui.ui.Style;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Menu;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
@@ -17,6 +18,7 @@ import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.ModelElement;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.command.VariableDeclarationCommands;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.node.PortElement;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.command.NodeCommands;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.itemlibrary.NodeModelLibraryItem;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.dependency.ModelUpdateVisitor;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.ChangeHintList;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.Model;
@@ -57,11 +59,13 @@ public class Blackboard extends BlackboardElement implements IGraphTool {
 
     public Blackboard(GraphView graphView) {
         this.graphView = graphView;
-        this.getLayout().widthPercent(100).heightPercent(100);
+        addClass("__blackboard__");
+        Style.defaultPipeline(getLayout(), l -> l.widthPercent(100).heightPercent(100));
 
-        scrollerView.viewPort.getLayout().paddingAll(0);
+        scrollerView.addClass("__blackboard_scroller__");
+        Style.defaultPipeline(scrollerView.viewPort.getLayout(), l -> l.paddingAll(0));
         scrollerView.viewPort.getStyle().background(IGuiTexture.EMPTY);
-        scrollerView.getLayout().widthPercent(100).heightPercent(100);
+        Style.defaultPipeline(scrollerView.getLayout(), l -> l.widthPercent(100).heightPercent(100));
 
         treeList.setStaticTree(true);
         treeList.setFlattenRoot(true);
@@ -83,6 +87,11 @@ public class Blackboard extends BlackboardElement implements IGraphTool {
     public void updateUIFromModel(ModelUpdateVisitor visitor) {
         super.updateUIFromModel(visitor);
         updateFromModel();
+    }
+
+    public void clear() {
+        treeList.setRoot(null);
+        itemUIs.clear();
     }
 
     /**
@@ -193,9 +202,13 @@ public class Blackboard extends BlackboardElement implements IGraphTool {
                         }
                     }
                 });
-                lastClickTime = System.currentTimeMillis();
+                if (e.bubbleListeners.size() == 1 && e.captureListeners.isEmpty()) {
+                    lastClickTime = System.currentTimeMillis();
+                } else {
+                    lastClickTime = 0;
+                }
             }
-        }, true);
+        });
         nodeUI.addEventListener(UIEvents.MOUSE_LEAVE, e -> {
             if (lastClickTime != 0 && isMouseDown(0) && treeList.getSelected().size() == 1
                     && node != rootNode) {
@@ -209,14 +222,14 @@ public class Blackboard extends BlackboardElement implements IGraphTool {
         nodeUI.addEventListener(UIEvents.DRAG_ENTER, e -> {
             if (e.dragHandler.getDraggingObject() instanceof DraggingUINode(var dragged) && dragged != node) {
                 var mode = TreeList.isMouseOverNodeAbove(e) ? 0 : TreeList.isMouseOverNodeCenter(e) ? 1 : TreeList.isMouseOverNodeBelow(e) ? 2 : -1;
-                e.currentElement.style(style -> style.overlayTexture(TreeList.createDraggingOverlay(mode)));
+                Style.importantPipeline(e.currentElement.getStyle(), s -> s.overlayTexture(TreeList.createDraggingOverlay(mode)));
             }
         }, true);
         nodeUI.addEventListener(UIEvents.DRAG_LEAVE, e -> {
-            e.currentElement.style(style -> style.overlayTexture(IGuiTexture.EMPTY));
+            Style.importantPipeline(e.currentElement.getStyle(), s -> s.overlayTexture(IGuiTexture.EMPTY));
         }, true);
         nodeUI.addEventListener(UIEvents.DRAG_END, e -> {
-            e.currentElement.style(style -> style.overlayTexture(IGuiTexture.EMPTY));
+            Style.importantPipeline(e.currentElement.getStyle(), s -> s.overlayTexture(IGuiTexture.EMPTY));
             if (e.dragHandler.getDraggingObject() instanceof DraggingUINode(var dragged) && graphView != null && graphView.graphView.isSelfOrChildHover()) {
                 // drag into graph view
                 if (dragged.getKey() instanceof VariableDeclarationModelBase variableModel) {
@@ -227,17 +240,81 @@ public class Blackboard extends BlackboardElement implements IGraphTool {
         nodeUI.addEventListener(UIEvents.DRAG_UPDATE, e -> {
             if (e.dragHandler.getDraggingObject() instanceof DraggingUINode(var dragged) && dragged != node) {
                 var mode = TreeList.isMouseOverNodeAbove(e) ? 0 : TreeList.isMouseOverNodeCenter(e) ? 1 : TreeList.isMouseOverNodeBelow(e) ? 2 : -1;
-                e.currentElement.style(style -> style.overlayTexture(TreeList.createDraggingOverlay(mode)));
+                Style.importantPipeline(e.currentElement.getStyle(), s -> s.overlayTexture(TreeList.createDraggingOverlay(mode)));
             } else {
-                e.currentElement.style(style -> style.overlayTexture(IGuiTexture.EMPTY));
+                Style.importantPipeline(e.currentElement.getStyle(), s -> s.overlayTexture(IGuiTexture.EMPTY));
             }
         });
         nodeUI.addEventListener(UIEvents.DRAG_PERFORM, e -> {
-            e.currentElement.style(style -> style.overlayTexture(IGuiTexture.EMPTY));
+            Style.importantPipeline(e.currentElement.getStyle(), s -> s.overlayTexture(IGuiTexture.EMPTY));
             if (e.dragHandler.getDraggingObject() instanceof DraggingUINode(var dragged) && dragged != node) {
-                // todo move into group
+                performGroupItemDrop(dragged, node, e);
             }
         });
+    }
+
+    /**
+     * Reorders or re-parents a Blackboard item in response to a successful drag-and-drop.
+     * The hover region within the target row decides the semantics:
+     * <ul>
+     *   <li>top third &rarr; insert <em>before</em> target, into target's parent group</li>
+     *   <li>middle third &rarr; insert <em>into</em> target (only when target is a group)</li>
+     *   <li>bottom third &rarr; insert <em>after</em> target, into target's parent group</li>
+     * </ul>
+     * Routed through {@link VariableDeclarationCommands.MoveGroupItemCommand} so the snapshot-based
+     * undo/redo system records the change.
+     */
+    protected void performGroupItemDrop(GroupItemTreeNode dragged, GroupItemTreeNode target, UIEvent e) {
+        if (dragged == target) return;
+        var draggedItem = dragged.getKey();
+        var targetItem = target.getKey();
+
+        var mode = TreeList.isMouseOverNodeAbove(e) ? 0
+                : TreeList.isMouseOverNodeCenter(e) ? 1
+                : TreeList.isMouseOverNodeBelow(e) ? 2 : -1;
+        if (mode < 0) return;
+
+        GroupModelBase targetGroup;
+        int insertIdx;
+        if (mode == 1) {
+            // Drop INTO target — only meaningful when target is a group.
+            if (!(targetItem instanceof GroupModelBase tg)) return;
+            // Don't drop a group into itself or one of its descendants — that would create a cycle.
+            if (isAncestorOrSelf(draggedItem, tg)) return;
+            targetGroup = tg;
+            insertIdx = tg.getItems().size();
+        } else {
+            // Drop above / below — sibling-level insertion in the target's parent group.
+            var parent = target.getParent();
+            if (parent == null || !(parent.getKey() instanceof GroupModelBase parentGroup)) return;
+            int targetIdx = parentGroup.getItems().indexOf(targetItem);
+            if (targetIdx < 0) return;
+            insertIdx = mode == 0 ? targetIdx : targetIdx + 1;
+            // Same-parent reorder going forward: removal shifts the list — compensate so the
+            // user-visible drop position matches.
+            if (draggedItem.getParentGroup() == parentGroup) {
+                int fromIdx = parentGroup.getItems().indexOf(draggedItem);
+                if (fromIdx >= 0 && fromIdx < insertIdx) insertIdx -= 1;
+            }
+            targetGroup = parentGroup;
+        }
+
+        // Final cycle-guard for the above/below path: don't insert a group into its own subtree.
+        if (isAncestorOrSelf(draggedItem, targetGroup)) return;
+
+        graphView.dispatchCommand(new VariableDeclarationCommands.MoveGroupItemCommand(
+                draggedItem, targetGroup, insertIdx));
+    }
+
+    /** True when {@code candidate} is {@code target} itself or any ancestor of it. */
+    private static boolean isAncestorOrSelf(IGroupItemModel candidate, GroupModelBase target) {
+        if (!(candidate instanceof GroupModelBase candidateGroup)) return false;
+        GroupModelBase current = target;
+        while (current != null) {
+            if (current == candidateGroup) return true;
+            current = current.getParentGroup();
+        }
+        return false;
     }
 
     @Override
@@ -253,11 +330,25 @@ public class Blackboard extends BlackboardElement implements IGraphTool {
     }
 
     protected void onDragVariablesIntoGraph(UIEvent e, List<VariableDeclarationModelBase> variables) {
+        // One variable, dropped on open canvas, in a graph that has a node for writing one: ask which
+        // was meant, the way Unreal asks for the same gesture. Everything else drops a getter, which
+        // is what this always did — several at once, a drop onto a port, or a graph that only reads.
+        if (variables.size() == 1 && e.target.getFirstAncestorOfType(PortElement.class) == null) {
+            var variable = variables.getFirst();
+            NodeModelLibraryItem setter = graphView.getGraph() == null ? null
+                    : graphView.getGraph().graphModel.createVariableSetterItem(variable);
+            if (setter != null) {
+                var position = graphView.getContentViewContainer()
+                        .worldToLocalLayoutOffset(new Vector2f(e.x, e.y));
+                openGetSetMenu(e, variable, setter, position);
+                return;
+            }
+        }
         var variablesWithInfo = new ArrayList<Pair<VariableDeclarationModelBase, Vector2f>>();
         for (int i = 0; i < variables.size(); i++) {
             variablesWithInfo.add(Pair.of(
                     variables.get(i),
-                    graphView.getContentViewContainer().worldToLocal(new Vector2f(e.x, e.y).add(0, i * 30))
+                    graphView.getContentViewContainer().worldToLocalLayoutOffset(new Vector2f(e.x, e.y).add(0, i * 30))
             ));
         }
 
@@ -277,6 +368,31 @@ public class Blackboard extends BlackboardElement implements IGraphTool {
         graphView.dispatchCommand(command);
     }
 
+    /**
+     * The Get/Set choice a dropped variable offers. Both arms go through the ordinary create-node
+     * command, so either is one undo away — the reason {@code createVariableSetterItem} hands back a
+     * library item rather than a node.
+     */
+    protected void openGetSetMenu(UIEvent e, VariableDeclarationModelBase variable,
+                                  NodeModelLibraryItem setter, Vector2f position) {
+        var mui = getModularUI();
+        if (mui == null) {
+            return;
+        }
+        var menu = TreeBuilder.Menu.start()
+                .leaf("graph.commands.get_variable", () -> graphView.dispatchCommand(
+                        new NodeCommands.CreateNodeCommand().withNodeOnGraph(variable, position, null)))
+                .leaf("graph.commands.set_variable", () -> graphView.dispatchCommand(
+                        new NodeCommands.CreateNodeCommand().onGraph(setter, position, null)));
+        var layoutOffset = mui.ui.rootElement.worldToLocalLayoutOffset(new Vector2f(e.x, e.y));
+        var contextMenu = new Menu<>(menu.build(), TreeBuilder.Menu::uiProvider)
+                .setHoverTextureProvider(TreeBuilder.Menu::hoverTextureProvider)
+                .setOnNodeClicked(TreeBuilder.Menu::handle);
+        contextMenu.addClass("__blackboard_context-menu__");
+        Style.importantPipeline(contextMenu.getLayout(), l -> l.left(layoutOffset.x).top(layoutOffset.y));
+        mui.ui.rootElement.addChild(contextMenu);
+    }
+
     protected void onBlackboardMouseUp(UIEvent event) {
         var mui = getModularUI();
         if (event.button == 1 && mui != null) {
@@ -285,13 +401,12 @@ public class Blackboard extends BlackboardElement implements IGraphTool {
                 var menu = createMenu();
                 if (menu.isEmpty()) return;
                 var layoutOffset = mui.ui.rootElement.worldToLocalLayoutOffset(new Vector2f(event.x, event.y));
-                mui.ui.rootElement.addChildren(new Menu<>(menu.build(), TreeBuilder.Menu::uiProvider)
+                var contextMenu = new Menu<>(menu.build(), TreeBuilder.Menu::uiProvider)
                         .setHoverTextureProvider(TreeBuilder.Menu::hoverTextureProvider)
-                        .setOnNodeClicked(TreeBuilder.Menu::handle)
-                        .layout(layout -> {
-                            layout.left(layoutOffset.x);
-                            layout.top(layoutOffset.y);
-                        }));
+                        .setOnNodeClicked(TreeBuilder.Menu::handle);
+                contextMenu.addClass("__blackboard_context-menu__");
+                Style.importantPipeline(contextMenu.getLayout(), l -> l.left(layoutOffset.x).top(layoutOffset.y));
+                mui.ui.rootElement.addChild(contextMenu);
             }
         }
     }
@@ -299,6 +414,7 @@ public class Blackboard extends BlackboardElement implements IGraphTool {
     protected TreeBuilder.Menu createMenu() {
         var menu = TreeBuilder.Menu.start();
         menu.leaf("graph.commands.create_variable", this::createVariable);
+        menu.leaf("graph.commands.create_group", this::createGroup);
         if (!getSelectedItems().isEmpty()) {
             menu.leaf("graph.commands.delete", graphView::deleteSelectedElements);
         }
@@ -320,7 +436,7 @@ public class Blackboard extends BlackboardElement implements IGraphTool {
 
         var typeHandle = lastVariableInfos.getTypeHandle();
 
-        var supportedTypes = graph.graphModel.getSupportTypes();
+        var supportedTypes = graph.graphModel.getVariableSupportTypes();
         if (!supportedTypes.isEmpty()
                 && !typeHandle.isCustomTypeHandle()
                 && !supportedTypes.contains(typeHandle)) {
@@ -336,6 +452,23 @@ public class Blackboard extends BlackboardElement implements IGraphTool {
                 Integer.MAX_VALUE,
                 lastVariableInfos.getModifiers(),
                 null
+        ));
+    }
+
+    /**
+     * Create a new empty group, nested into the currently selected group (or the default section).
+     */
+    public void createGroup() {
+        var graph = graphView.getGraph();
+        if (graph == null) return;
+
+        var section = graph.graphModel.getSectionModel(GraphModel.DEFAULT_SECTION_NAME);
+        var target = getTargetGroupForNewVariable(section);
+
+        graphView.dispatchCommand(new VariableDeclarationCommands.CreateGroupCommand(
+                "New Group",
+                target,
+                Integer.MAX_VALUE
         ));
     }
 

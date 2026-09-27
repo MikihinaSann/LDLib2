@@ -4,21 +4,21 @@ import com.lowdragmc.lowdraglib2.client.shader.LDLibShaders;
 import com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.mojang.blaze3d.pipeline.MainTarget;
+import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.pipeline.TextureTarget;
 import com.mojang.blaze3d.platform.GlStateManager;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.*;
+import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import net.minecraft.client.Minecraft;
 
 import org.jetbrains.annotations.Nullable;
-import java.util.ArrayDeque;
-import java.util.Queue;
 
 public class UIVisualLayer {
     // msaa does it necessary?
-//    private static final Queue<MsaaTarget> TARGET_POOL = new ArrayDeque<>();
-    private static final Queue<MainTarget> TARGET_POOL = new ArrayDeque<>();
-    private static final Queue<TextureTarget> MASK_POOL = new ArrayDeque<>();
+//    private static final ObjectArrayList<MsaaTarget> TARGET_POOL = new ObjectArrayList<>();
+    private static final ObjectArrayList<MainTarget> TARGET_POOL = new ObjectArrayList<>();
+    private static final ObjectArrayList<TextureTarget> MASK_POOL = new ObjectArrayList<>();
     private static final int MAX_POOL_SIZE = 10;
 //    private static final int SAMPLER = 4;
 //    private static TextureTarget MSAA_RESOLVED_COLOR;
@@ -36,7 +36,7 @@ public class UIVisualLayer {
     public void release() {
         if (target != null) {
             if (TARGET_POOL.size() < MAX_POOL_SIZE) {
-                TARGET_POOL.offer(target);
+                TARGET_POOL.add(target);
             } else {
                 target.destroyBuffers();
             }
@@ -44,7 +44,7 @@ public class UIVisualLayer {
         }
         if (mask != null) {
             if (MASK_POOL.size() < MAX_POOL_SIZE) {
-                MASK_POOL.offer(mask);
+                MASK_POOL.add(mask);
             } else {
                 mask.destroyBuffers();
             }
@@ -54,10 +54,8 @@ public class UIVisualLayer {
 
     private void ensureTargetValid(int width, int height) {
         if (target == null) {
-            target = TARGET_POOL.poll();
-            if (target == null) {
-                target = new MainTarget(width, height);
-            }
+            var pooled = takeFromPool(TARGET_POOL, width, height);
+            target = pooled == null ? new MainTarget(width, height) : pooled;
         }
         if (target.width != width || target.height != height) {
             target.resize(width, height, Minecraft.ON_OSX);
@@ -66,14 +64,32 @@ public class UIVisualLayer {
 
     private void ensureMaskValid(int width, int height) {
         if (mask == null) {
-            mask = MASK_POOL.poll();
-            if (mask == null) {
-                mask = new TextureTarget(width, height, false, Minecraft.ON_OSX);
-            }
+            var pooled = takeFromPool(MASK_POOL, width, height);
+            mask = pooled == null ? new TextureTarget(width, height, false, Minecraft.ON_OSX) : pooled;
         }
         if (mask.width != width || mask.height != height) {
             mask.resize(width, height, Minecraft.ON_OSX);
         }
+    }
+
+    /**
+     * Takes a pooled target, preferring one that is already the right size.
+     *
+     * <p>Resizing destroys and recreates the attachments, so with two surfaces of different sizes
+     * alive at once — a floating window alongside the game window — a plain LIFO pool would hand the
+     * same target back and forth and reallocate it twice every frame.
+     *
+     * @return a pooled target, or {@code null} if the pool is empty
+     */
+    @Nullable
+    private static <T extends RenderTarget> T takeFromPool(ObjectArrayList<T> pool, int width, int height) {
+        for (int i = pool.size() - 1; i >= 0; i--) {
+            var candidate = pool.get(i);
+            if (candidate.width == width && candidate.height == height) {
+                return pool.remove(i);
+            }
+        }
+        return pool.isEmpty() ? null : pool.remove(pool.size() - 1);
     }
 
 //    private TextureTarget ensureResolvedValid(int width, int height) {
@@ -99,7 +115,7 @@ public class UIVisualLayer {
     }
 
     public void bind(GUIContext guiContext) {
-        ensureTargetValid(guiContext.mc.getMainRenderTarget().width, guiContext.mc.getMainRenderTarget().height);
+        ensureTargetValid(guiContext.surface.framebufferWidth(), guiContext.surface.framebufferHeight());
         assert target != null;
 
         var overflowClip = element.getStyle().overflowClip();
@@ -149,6 +165,8 @@ public class UIVisualLayer {
     }
 
     public void draw(GUIContext guiContext) {
+        if (target == null) return;
+
         var opacity = element.getStyle().opacity();
         var hasClip = element.getStyle().overflowClip() != IGuiTexture.EMPTY;
 

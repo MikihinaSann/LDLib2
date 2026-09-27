@@ -9,6 +9,8 @@ import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 
 import javax.annotation.ParametersAreNonnullByDefault;
+import java.nio.file.Path;
+import java.util.List;
 
 @Environment(EnvType.CLIENT)
 @ParametersAreNonnullByDefault
@@ -46,4 +48,10 @@ public class ModularUIContainerScreen extends AbstractContainerScreen<ModularUIC
 
     }
 
+    @Override
+    public void onFilesDrop(List<Path> paths) {
+        if (!getMenu().getModularUI().onFilesDrop(paths.stream().map(Path::toFile).toList())) {
+            super.onFilesDrop(paths);
+        }
+    }
 }

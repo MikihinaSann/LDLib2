@@ -9,6 +9,7 @@ import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 
 import org.jetbrains.annotations.Nullable;
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -107,6 +108,10 @@ public class UIEvent {
      */
     public HoverTooltips hoverTooltips;
     /**
+     * File Drop Event data: the files dropped onto the window from outside the game.
+     */
+    public List<File> droppedFiles = List.of();
+    /**
      * Command name
      */
     public String command;
@@ -135,6 +140,16 @@ public class UIEvent {
      * The listener that is currently being processed.
      */
     public UIEventListener currentListener;
+    /**
+     * Whether a keymap has already decided what this key press means.
+     *
+     * <p>Set on a {@code keyDown} that reached a host with a keymap of its own — an editor. The built-in
+     * chord table in {@code ModularUI} is the fallback for UIs that have no keymap, and it must not fire
+     * as well: it is hardcoded, so a shortcut the user rebound would otherwise keep working on its old
+     * key too. Being <em>seen</em> is what counts, not being matched — an action that was unbound is
+     * exactly the case where the old chord must stop working.
+     */
+    public boolean keymapResolved = false;
     /**
      * Whether the propagation is canceled.
      */

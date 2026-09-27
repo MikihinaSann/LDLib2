@@ -2,6 +2,7 @@ package com.lowdragmc.lowdraglib2.gui.ui.event;
 
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import it.unimi.dsi.fastutil.Pair;
+import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import lombok.experimental.UtilityClass;
 
 @UtilityClass
@@ -180,7 +181,7 @@ public final class UIEventDispatcher {
 
         if (event.propagationStopped) return true;
 
-        for (var child : currentElement.getSortedChildren()) {
+        for (var child : currentElement.getSafeSortedChildren()) {
             if ((onlyActive && !child.isActive()) || (onlyDisplay && !child.isDisplayed())) {
                 continue;
             }

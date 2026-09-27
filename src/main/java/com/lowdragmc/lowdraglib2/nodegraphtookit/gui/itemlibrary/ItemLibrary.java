@@ -1,187 +1,121 @@
 package com.lowdragmc.lowdraglib2.nodegraphtookit.gui.itemlibrary;
 
-import com.lowdragmc.lowdraglib2.gui.ColorPattern;
-import com.lowdragmc.lowdraglib2.gui.texture.DynamicTexture;
+import com.lowdragmc.lowdraglib2.LDLib2;
 import com.lowdragmc.lowdraglib2.gui.texture.Icons;
+import com.lowdragmc.lowdraglib2.gui.ui.Style;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
-import com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap;
-import com.lowdragmc.lowdraglib2.gui.ui.data.Vertical;
-import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
-import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
-import com.lowdragmc.lowdraglib2.gui.ui.elements.TextField;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.ItemLibraryPanel;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TreeList;
-import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
-import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
-import com.lowdragmc.lowdraglib2.gui.ui.utils.UIElementProvider;
 import com.lowdragmc.lowdraglib2.gui.util.ITreeNode;
 import com.lowdragmc.lowdraglib2.gui.util.TreeBuilder;
 import com.lowdragmc.lowdraglib2.gui.util.TreeNode;
-import com.lowdragmc.lowdraglib2.gui.util.WindowDragHelper;
-import com.lowdragmc.lowdraglib2.nodegraphtookit.api.graph.Graph;
-import com.lowdragmc.lowdraglib2.nodegraphtookit.api.port.PortDirection;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.api.node.BlockNode;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.api.node.ContextNode;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.api.node.Node;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.api.node.NodeAttribute;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.api.type.TypeHandle;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.GraphView;
-import com.lowdragmc.lowdraglib2.nodegraphtookit.model.SpawnFlags;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.model.GraphElementModel;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.graph.CustomGraphModelImpl;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.graph.GraphModel;
-import com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.NodeModel;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.ContextNodeModel;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.ICustomNodeModel;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.InputOutputPortsNodeModel;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.PortModel;
-import com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.PortNodeModel;
-import com.lowdragmc.lowdraglib2.nodegraphtookit.model.variable.VariableDeclarationModelBase;
-import dev.vfyjxf.taffy.style.AlignItems;
-import dev.vfyjxf.taffy.style.FlexDirection;
-import dev.vfyjxf.taffy.style.TaffyPosition;
+import dev.vfyjxf.taffy.style.TaffyDisplay;
 import net.minecraft.network.chat.Component;
 import org.jetbrains.annotations.Nullable;
-import org.joml.Vector2f;
 
-import java.util.Collections;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
-import java.util.Optional;
+import java.util.Map;
+import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 
-public class ItemLibrary extends UIElement {
-    public record DragMove(Vector2f originalPos) {}
-    public record DragResize(Vector2f originalSize) {}
+/**
+ * The graph's pick-a-node popup: an {@link ItemLibraryPanel} whose entries are node classes, the
+ * constants of the graph's type system, a context's blocks, and the ports of any of those.
+ *
+ * <p>Everything about <i>being</i> a searchable popup — where it opens, the arrow keys, the search,
+ * the description panel, the drag and the resize — is the panel's, and was moved there so that
+ * anything else needing this window does not have to grow a second one that looks almost like it.
+ * What is left here is the half that knows what a node is: which trees exist, how a node type becomes
+ * an entry, the throwaway models used to read a node's ports and description, and the port sub-rows a
+ * wire drag hangs under each entry.
+ */
+public class ItemLibrary extends ItemLibraryPanel<ItemLibraryItem> {
 
     public final GraphView graphView;
 
-    public final UIElement headBar = new UIElement();
-    public final Label title = new Label();
-    public final TextField searchField = new TextField();
-    public final ScrollerView resultContainer = new ScrollerView();
-    public final UIElement tailBar = new UIElement();
-    public final Label tailLabel = new Label();
-    public final UIElement resizeButton = new UIElement();
-
-    public final UIElement treeContainer = new UIElement();
-    public final TreeList<TreeNode<ItemLibraryItem, Void>> searchTree = new TreeList<>();
-    public final TreeList<TreeNode<ItemLibraryItem, Void>> recommendationTree = new TreeList<>();
     public final TreeList<TreeNode<ItemLibraryItem, Void>> constantTree = new TreeList<>();
+    public final TreeList<TreeNode<ItemLibraryItem, Void>> contextTree = new TreeList<>();
     public final TreeList<TreeNode<ItemLibraryItem, Void>> nodeTree = new TreeList<>();
+    /** Hidden by default. Populated and shown only when {@link #showBlocksForContext} is called. */
+    public final TreeList<TreeNode<ItemLibraryItem, Void>> blockTree = new TreeList<>();
+
     // runtime
     @Nullable
     protected GraphModel graphModel;
     @Nullable
     protected List<PortModel> portModels;
-    @Nullable
-    protected TreeList<?> selectedTree;
-    @Nullable
-    protected ItemLibraryItem selectedItem;
-    @Nullable
-    protected Consumer<@Nullable ItemLibraryItem> onFinished;
-    @Nullable
-    protected List<ItemLibraryItem> searchCandidates;
+    /** True while the library is in "pick a block for context X" mode (see {@link #showBlocksForContext}). */
+    protected boolean blockOnlyMode = false;
+    /**
+     * Throwaway models built to inspect a node type (ports, description). Cached for the lifetime of a
+     * single show, so the recommendation pass, the port sub-items and the description panel share one
+     * model per item instead of creating one each.
+     */
+    protected final Map<ItemLibraryItem, GraphElementModel> testModels = new HashMap<>();
 
     public ItemLibrary(GraphView graphView) {
+        super(graphView, ItemLibraryItem::new);
         this.graphView = graphView;
-        getLayout().positionType(TaffyPosition.ABSOLUTE)
-                .gapAll(2)
-                .paddingAll(5)
-                .width(150)
-                .height(200);
-        getStyle().background(Sprites.BORDER1_RT1);
 
-        headBar.getLayout().flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(2);
-        title.getTextStyle().textWrap(TextWrap.HOVER_ROLL);
-        title.setOverflowVisible(false);
-        title.getLayout().flex(1);
+        constantTree.addClass("__item-library_constant-tree__");
+        contextTree.addClass("__item-library_context-tree__");
+        nodeTree.addClass("__item-library_node-tree__");
+        blockTree.addClass("__item-library_block-tree__");
 
-        resultContainer.getLayout().flex(1);
-
-        searchTree.setStaticTree(false);
-        recommendationTree.setStaticTree(false);
-        constantTree.setStaticTree(false);
-        nodeTree.setStaticTree(false);
-
-        searchField.setTextResponder(this::onSearchWordChanged);
-        searchTree.setDisplay(false);
-        searchTree.setFlattenRoot(true);
-        initTreeList(searchTree, null);
-
-        recommendationTree.setDisplay(false);
-        initTreeList(recommendationTree, treeContainer);
-        initTreeList(constantTree, treeContainer);
-        initTreeList(nodeTree, treeContainer);
-
-        resultContainer.addScrollViewChildren(searchTree, treeContainer);
-
-        tailBar.getLayout().flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(2);
-        tailLabel.setText("Double click to add a node");
-        tailLabel.getTextStyle().textWrap(TextWrap.HOVER_ROLL).textAlignVertical(Vertical.CENTER).fontSize(4.5f);
-        tailLabel.setOverflowVisible(false);
-        tailLabel.getLayout().flex(1);
-        resizeButton.getLayout().width(9).height(9);
-        resizeButton.getStyle().background(DynamicTexture.of(() -> resizeButton.isHover() ?
-                Icons.RESIZE_BOTTOM_RIGHT : Icons.RESIZE_BOTTOM_RIGHT.copy().setColor(ColorPattern.LIGHT_GRAY.color)));
-
-        addChildren(
-                headBar.addChildren(title),
-                searchField,
-                resultContainer,
-                tailBar.addChildren(tailLabel, resizeButton)
-        );
-        setFocusable(true);
-        setEnforceFocus(e -> this.hide());
-        addEventListener(UIEvents.LAYOUT_CHANGED, e -> adaptPositionToScreen());
-        internalSetup();
-
-        // drag
-        WindowDragHelper.setDragMove(headBar, this, null, null);
-
-        // resize
-        resizeButton.addEventListener(UIEvents.MOUSE_DOWN, e -> {
-            var width = 12;
-            var height = 12;
-            resizeButton.startDrag(new DragResize(new Vector2f(this.getSizeWidth(), this.getSizeHeight())), Icons.MOVE)
-                    .setDragTexture(- width / 2f, -height / 2f, width, height);
-        });
-        resizeButton.addEventListener(UIEvents.DRAG_SOURCE_UPDATE, e -> {
-            if (e.dragHandler.draggingObject instanceof DragResize(var oSize)) {
-                var normalSizeOffset = getLocalMouseNormal(e.x - e.dragStartX, e.y - e.dragStartY);
-                this.getLayout()
-                        .width(Math.max(oSize.x + normalSizeOffset.x, 50))
-                        .height(Math.max(oSize.y + normalSizeOffset.y, 70));
-            }
-        });
+        addContentTree(constantTree);
+        addContentTree(contextTree);
+        addContentTree(nodeTree);
+        // Block tree shares the same container slot; only one of {nodeTree+constantTree+contextTree}
+        // and {blockTree} is visible at a time — see applyTreeVisibility.
+        Style.importantPipeline(blockTree.getLayout(), l -> l.display(TaffyDisplay.NONE));
+        addContentTree(blockTree);
     }
 
-    protected void initTreeList(TreeList<TreeNode<ItemLibraryItem, Void>> treeList, @Nullable UIElement container) {
-        treeList.setNodeUISupplier(TreeList.iconTextTemplate(
-                node -> node.getKey().getIcon(),
-                node -> node.getKey().getDisplayName())
-        );
-        treeList.setOnDoubleClickNode(node -> {
-            if (node.isBranch()) return;
-            onNodeDecided(node.getKey());
-        });
-        treeList.setOnSelectedChanged(selected -> {
-            if (selected.isEmpty()) return;
-            onSelectedChanged(treeList, selected.iterator().next().getKey());
-        });
-        treeList.setDoubleClickToExpand(false);
-        treeList.setClickToExpand(true);
-        treeList.setSelectableNodeFilter(ITreeNode::isLeaf);
-        if (container == null) return;
-        container.addChild(treeList);
-    }
+    // ---- the graph's entries ----
 
     public void onLoadGraph(GraphModel graphModel) {
         this.graphModel = graphModel;
-        // tree
+        // Regular nodes go to nodeTree, context nodes to contextTree, blocks are excluded —
+        // block-only mode populates blockTree on demand per parent context.
         var nodesBuilder = TreeBuilder.<ItemLibraryItem, Void>start(new ItemLibraryItem()
                 .setIcon(Icons.NODE)
                 .setDisplayName(Component.translatable("graph.library.nodes")));
-        for (var nodeType : graphModel.getSupportNodes()) {
-            nodesBuilder.leaf(new NodeModelLibraryItem(nodeType.getSimpleName(),
-                    data -> CustomGraphModelImpl.createNodeFromData(data, nodeType)), null);
+        var contextsBuilder = TreeBuilder.<ItemLibraryItem, Void>start(new ItemLibraryItem()
+                .setIcon(Icons.NODE)
+                .setDisplayName(Component.translatable("graph.library.contexts")));
+        var nodeGroupItems = new HashMap<String, ItemLibraryItem>();
+        var contextGroupItems = new HashMap<String, ItemLibraryItem>();
+        for (var nodeType : graphModel.getLibrarySupportNodes()) {
+            if (BlockNode.class.isAssignableFrom(nodeType)) continue;
+            if (ContextNode.class.isAssignableFrom(nodeType)) {
+                addNodeLibraryItem(contextsBuilder, contextGroupItems, nodeType);
+            } else {
+                addNodeLibraryItem(nodesBuilder, nodeGroupItems, nodeType);
+            }
         }
         nodeTree.setRoot(nodesBuilder.build());
+        contextTree.setRoot(contextsBuilder.build());
         // load constants
         var constantsBuilder = TreeBuilder.<ItemLibraryItem, Void>start(new ItemLibraryItem()
                 .setIcon(Icons.NODE)
                 .setDisplayName(Component.translatable("graph.library.constants")));
-        for (var typeHandle : graphModel.getSupportTypes()) {
+        for (var typeHandle : graphModel.getLibrarySupportTypes()) {
             constantsBuilder.leaf(new NodeModelLibraryItem(typeHandle.getName(),
                     data -> data.createConstantNode(typeHandle.getName(), typeHandle))
                     .setDisplayName(Component.translatable(typeHandle.getFriendlyName())), null);
@@ -189,89 +123,313 @@ public class ItemLibrary extends UIElement {
         constantTree.setRoot(constantsBuilder.build());
     }
 
-    public Stream<ItemLibraryItem> getAllItems() {
-        return Stream.concat(getTreeItems(constantTree), getTreeItems(nodeTree));
-    }
-
-    protected Stream<ItemLibraryItem> getTreeItems(TreeList<TreeNode<ItemLibraryItem, Void>> tree) {
-        return Optional.ofNullable(tree.getRoot())
-                .map(node -> node.flatten().stream().filter(ITreeNode::isLeaf).map(ITreeNode::getKey))
-                .orElseGet(Stream::empty);
-    }
-
-    protected void onSelectedChanged(TreeList<TreeNode<ItemLibraryItem, Void>> tree, ItemLibraryItem newSelected) {
-        if (selectedTree != tree) {
-            if (selectedTree != null) {
-                selectedTree.setSelected(Collections.emptySet(), false);
-            }
-            selectedTree = tree;
-        }
-        clearSelectedItemData(this.selectedItem);
-        this.selectedItem = newSelected;
-        prepareSelectedItemData(newSelected);
-    }
-
-    protected void onSearchWordChanged(String word) {
-        if (word.isBlank()) {
-            clearSearchResult();
+    static void addNodeLibraryItem(TreeBuilder<ItemLibraryItem, Void> builder,
+                                   Map<String, ItemLibraryItem> groupItems,
+                                   Class<? extends Node> nodeType) {
+        var annotation = nodeType.getAnnotation(NodeAttribute.class);
+        var name = annotation == null ? nodeType.getSimpleName() : annotation.name();
+        var item = new NodeModelLibraryItem(name,
+                data -> CustomGraphModelImpl.createNodeFromData(data, nodeType));
+        if (annotation == null || annotation.group().isBlank()) {
+            builder.leaf(item, null);
             return;
         }
-        var lowerWorld = word.toLowerCase();
-        var builder = TreeBuilder.<ItemLibraryItem, Void>start(new ItemLibraryItem());
-        getAllItems().filter(item -> item.getSearchableName().toLowerCase().contains(lowerWorld))
-                .forEach(item -> {
-                    builder.leaf(item, null);
-                });
-        searchTree.setDisplay(true);
-        searchTree.setRoot(builder.build());
-        treeContainer.setDisplay(false);
+
+        var groupPath = getNodeGroupPath(annotation.group(), groupItems);
+        if (groupPath.isEmpty()) {
+            builder.leaf(item, null);
+        } else {
+            builder.diveBranch(groupPath, b -> b.leaf(item, null));
+        }
     }
 
-    protected void clearSearchResult() {
-        searchTree.setDisplay(false);
-        searchTree.setRoot(null);
-        treeContainer.setDisplay(true);
-        searchCandidates = null;
+    private static List<ItemLibraryItem> getNodeGroupPath(String group, Map<String, ItemLibraryItem> groupItems) {
+        var groupPath = new ArrayList<ItemLibraryItem>();
+        var fullPath = new StringBuilder();
+        for (var part : group.split("/")) {
+            var groupName = part.trim();
+            if (groupName.isEmpty()) continue;
+            if (!fullPath.isEmpty()) {
+                fullPath.append('/');
+            }
+            fullPath.append(groupName);
+            var path = fullPath.toString();
+            groupPath.add(groupItems.computeIfAbsent(path, ignored -> new ItemLibraryItem()
+                    .setPath(path)
+                    .setIcon(Icons.FOLDER)
+                    .setDisplayName(Component.translatable(groupName))
+                    .setSearchableName(groupName)));
+        }
+        return groupPath;
     }
 
-    protected void prepareSelectedItemData(ItemLibraryItem item) {
-        if (item == null || this.graphModel == null) return;
-        if (portModels == null || portModels.isEmpty()) return;
-        var sourcePort = portModels.getFirst();
-        var testData = GraphNodeCreationData.ofOrphan(this.graphModel);
-        if (item instanceof NodeModelLibraryItem nodeItem) {
-            if (nodeItem.createNode(testData) instanceof NodeModel nodeModel) {
-                var ports = sourcePort.getDirection() == PortDirection.INPUT ?
-                    nodeModel.getOutputsByDisplayOrder() : nodeModel.getInputsByDisplayOrder();
-                var compatiblePorts = graphModel.getCompatiblePorts(ports, sourcePort);
-                if (compatiblePorts.isEmpty()) return;
-                nodeItem.setData(new NodeItemLibraryData(nodeModel.getClass(), compatiblePorts.getFirst()));
-                for (var portToAdd : compatiblePorts) {
-                    // todo sub port items
-                }
+    @Override
+    public Stream<ItemLibraryItem> getAllItems() {
+        // Search is scoped to whatever's currently visible. In block-only mode that's only the
+        // compatible blocks; otherwise it's the regular nodes + contexts + constants.
+        if (blockOnlyMode) {
+            return getTreeItems(blockTree);
+        }
+        return Stream.concat(
+                Stream.concat(getTreeItems(constantTree), getTreeItems(nodeTree)),
+                getTreeItems(contextTree));
+    }
+
+    @Override
+    protected List<TreeList<TreeNode<ItemLibraryItem, Void>>> getKeyboardNavigationTrees() {
+        if (searchTree.getRoot() != null) {
+            return List.of(searchTree);
+        }
+        if (blockOnlyMode) {
+            return List.of(blockTree);
+        }
+        return List.of(recommendationTree, constantTree, contextTree, nodeTree);
+    }
+
+    // ---- what the panel asks about an entry ----
+
+    /**
+     * A node is decidable (selectable + confirmable) when it holds a node item — even if it grew port
+     * children — or when it is a leaf, i.e. a constant / block / port item. Group folders are not.
+     */
+    protected static boolean isDecidableNode(ITreeNode<ItemLibraryItem, ?> node) {
+        return node.getKey() instanceof NodeModelLibraryItem || node.isLeaf();
+    }
+
+    @Override
+    protected boolean isDecidable(ITreeNode<ItemLibraryItem, ?> node) {
+        return isDecidableNode(node);
+    }
+
+    /** A node item stays an entry once it grew port children; the port children themselves are not. */
+    @Override
+    protected boolean isEntryItem(ItemLibraryItem item) {
+        return !(item instanceof PortLibraryItem);
+    }
+
+    /**
+     * A node item stays selectable/confirmable once it grows port children; clicking it only selects
+     * it, expanding its ports is done with a right click (or the arrow).
+     */
+    @Override
+    protected boolean isClickToExpand(ITreeNode<ItemLibraryItem, ?> node) {
+        return !(node.getKey() instanceof NodeModelLibraryItem);
+    }
+
+    @Override
+    protected void onRowBuilt(TreeList<TreeNode<ItemLibraryItem, Void>> tree,
+                              TreeNode<ItemLibraryItem, Void> node, UIElement ui) {
+        ensurePortChildren(node);
+    }
+
+    /** The selected item's node description — see {@link Node#createDescriptionUI()}. */
+    @Nullable
+    @Override
+    protected UIElement createDescriptionUI(ItemLibraryItem item) {
+        var node = resolveNode(item);
+        return node == null ? null : node.createDescriptionUI();
+    }
+
+    /** Resolves the {@link Node} behind a library item, or null if the item isn't backed by one. */
+    @Nullable
+    protected Node resolveNode(ItemLibraryItem rawItem) {
+        var item = ownerItem(rawItem);
+        if (item instanceof BlockLibraryItem blockItem) {
+            try {
+                return blockItem.getBlockClass().getConstructor().newInstance();
+            } catch (Exception e) {
+                LDLib2.LOGGER.error("Failed to create block node {} for its description", blockItem.getBlockClass(), e);
+                return null;
+            }
+        }
+        // constants have no custom node behind them, hence no description
+        return getTestModel(item) instanceof ICustomNodeModel customNodeModel ? customNodeModel.getNode() : null;
+    }
+
+    /** Sets the width of the description side panel. */
+    @Override
+    public ItemLibrary setDescriptionWidth(float descriptionWidth) {
+        super.setDescriptionWidth(descriptionWidth);
+        return this;
+    }
+
+    // ---- test models and ports ----
+
+    /**
+     * Gets the throwaway model used to inspect the item's node type, creating it on first use.
+     * Returns null for items that don't create a node (e.g. blocks) or when no graph is loaded.
+     */
+    @Nullable
+    protected GraphElementModel getTestModel(ItemLibraryItem item) {
+        if (this.graphModel == null || !(item instanceof NodeModelLibraryItem nodeItem)) return null;
+        return testModels.computeIfAbsent(item, key -> nodeItem.createNode(GraphNodeCreationData.ofOrphan(this.graphModel)));
+    }
+
+    /**
+     * The ports of the item's node that the dragged wire can be connected to, in display order.
+     * Empty when the library wasn't opened from a wire drag.
+     */
+    protected List<PortModel> getCompatiblePorts(ItemLibraryItem item) {
+        if (portModels == null || portModels.isEmpty()) return List.of();
+        return getCompatiblePorts(item, portModels.getFirst());
+    }
+
+    /** As {@link #getCompatiblePorts(ItemLibraryItem)}, for an explicit source port. */
+    protected List<PortModel> getCompatiblePorts(ItemLibraryItem item, PortModel sourcePort) {
+        return getTestModel(item) instanceof InputOutputPortsNodeModel nodeModel
+                ? nodeModel.getPortsFitToConnectTo(sourcePort)
+                : List.of();
+    }
+
+    /**
+     * Attaches one child per connectable port to a node item's tree node, so the user can expand it and
+     * pick the port to wire to instead of taking the first compatible one. Does nothing when the
+     * library wasn't opened from a wire drag, or when the children already exist.
+     */
+    protected void ensurePortChildren(TreeNode<ItemLibraryItem, Void> node) {
+        // getCompatiblePorts is empty unless a wire drag is in progress, so this self-disables
+        if (!(node.getKey() instanceof NodeModelLibraryItem nodeItem) || node.isBranch()) return;
+        for (var port : getCompatiblePorts(nodeItem)) {
+            node.createChild(new PortLibraryItem(nodeItem, port));
+        }
+    }
+
+    protected void removePortChildren(TreeNode<ItemLibraryItem, Void> node) {
+        for (var child : List.copyOf(node.getChildren())) {
+            if (child.getKey() instanceof PortLibraryItem) {
+                node.removeChild(child);
             }
         }
     }
 
-    protected void clearSelectedItemData(ItemLibraryItem item) {
-        if (item == null) return;
-        item.setData(null);
+    /**
+     * Attaches the port sub-items to the rows that already exist. Needed because trees (and their
+     * rows) survive between shows, so a row built before this wire drag would never get them —
+     * rows built from now on are covered by the {@code onRowBuilt} hook. With
+     * {@code staticTree = false} the {@link TreeList} picks the new children up on its next tick.
+     */
+    protected void attachPortChildren() {
+        for (var tree : getAllTrees()) {
+            // only materialised rows: entries inside collapsed folders are handled when they are built
+            for (var node : List.copyOf(tree.getNodeUIs().keySet())) {
+                ensurePortChildren(node);
+            }
+        }
     }
 
+    /** Strips every port sub-item, whether its row is currently built or not. */
+    protected void detachPortChildren() {
+        for (var tree : getAllTrees()) {
+            var root = tree.getRoot();
+            if (root == null) continue;
+            for (var node : root.flatten()) {
+                if (!(node instanceof TreeNode<ItemLibraryItem, Void> treeNode)) continue;
+                // collapse first: it drops the port rows right away instead of leaving them on screen
+                // until the tree's next tick notices the children are gone.
+                if (treeNode.getKey() instanceof NodeModelLibraryItem && tree.isNodeExpanded(treeNode)) {
+                    tree.collapseNode(treeNode);
+                }
+                removePortChildren(treeNode);
+            }
+        }
+    }
+
+    /** The entry an item belongs to: a port sub-item stands for its owner, anything else for itself. */
+    protected static ItemLibraryItem ownerItem(ItemLibraryItem item) {
+        return item instanceof PortLibraryItem portItem ? portItem.getOwner() : item;
+    }
+
+    /**
+     * A port sub-item pins its port on the owner and hands the owner back: the create-node commands
+     * work with a {@link NodeModelLibraryItem} and read the port from its data.
+     */
+    @Override
+    protected ItemLibraryItem decidedItem(ItemLibraryItem item) {
+        if (item instanceof PortLibraryItem) {
+            prepareSelectedItemData(item);
+        }
+        return ownerItem(item);
+    }
+
+    @Override
+    protected void prepareSelectedItemData(@Nullable ItemLibraryItem item) {
+        if (item == null || portModels == null || portModels.isEmpty()) return;
+        NodeModelLibraryItem owner;
+        PortModel portToConnect;
+        if (item instanceof PortLibraryItem portItem) {
+            // an explicitly picked port wins over the default first-compatible-port behaviour
+            owner = portItem.getOwner();
+            portToConnect = portItem.getPort();
+        } else if (item instanceof NodeModelLibraryItem nodeItem) {
+            var ports = getCompatiblePorts(nodeItem);
+            if (ports.isEmpty()) return;
+            owner = nodeItem;
+            portToConnect = ports.getFirst();
+        } else return;
+        var model = getTestModel(owner);
+        if (model != null) {
+            owner.setData(new NodeItemLibraryData(model.getClass(), portToConnect));
+        }
+    }
+
+    @Override
+    protected void clearSelectedItemData(@Nullable ItemLibraryItem item) {
+        if (item == null) return;
+        ownerItem(item).setData(null);
+    }
+
+    // ---- show / hide ----
+
+    @Override
     public void show(float mouseX, float mouseY, Consumer<@Nullable ItemLibraryItem> onFinished) {
         title.setText("graph.commands.add_node");
-        var parent = getParent();
-        var localMouse = getLocalMouse(mouseX, mouseY);
-        var offset = new Vector2f(
-                localMouse.x - (parent == null ? 0 : parent.getPositionX()),
-                localMouse.y - (parent == null ? 0 : parent.getPositionY())
-        );
-        this.getLayout()
-                .left(offset.x)
-                .top(offset.y);
-        setDisplay(true);
-        focus();
-        this.onFinished = onFinished;
+        tailLabel.setText("graph.double_click_add");
+        this.blockOnlyMode = false;
+        applyTreeVisibility();
+        super.show(mouseX, mouseY, onFinished);
+    }
+
+    /**
+     * Opens the library in block-only mode for the given context. The block tree is rebuilt
+     * from {@code context.getSupportBlockClasses()}; all other trees are hidden.
+     *
+     * <p>The {@code onFinished} consumer receives a {@link BlockLibraryItem} on selection (or
+     * {@code null} on dismiss). Callers should dispatch
+     * {@code BlockCommands.InsertBlockCommand} using {@code item.getBlockClass()}.</p>
+     */
+    public void showBlocksForContext(float mouseX, float mouseY, ContextNodeModel context,
+                                     Consumer<@Nullable ItemLibraryItem> onFinished) {
+        if (context == null) return;
+        title.setText("graph.add_block");
+        tailLabel.setText("graph.double_click_add");
+        this.blockOnlyMode = true;
+
+        var builder = TreeBuilder.<ItemLibraryItem, Void>start(new ItemLibraryItem()
+                .setIcon(Icons.NODE)
+                .setDisplayName(Component.translatable("graph.library.blocks")));
+        for (var blockType : context.getSupportBlockClasses()) {
+            var annotation = blockType.getAnnotation(NodeAttribute.class);
+            var name = annotation == null ? blockType.getSimpleName() : annotation.name();
+            builder.leaf(new BlockLibraryItem(name, blockType), null);
+        }
+        var root = builder.build();
+        blockTree.setRoot(root);
+        blockTree.expandNode(root);
+        clearKeyboardSelection();
+
+        applyTreeVisibility();
+        // not show(): that one resets block-only mode, which is the whole point of this entry point
+        super.show(mouseX, mouseY, onFinished);
+    }
+
+    /** Toggles tree visibility based on {@link #blockOnlyMode}. State-driven, pin via IMPORTANT. */
+    protected void applyTreeVisibility() {
+        var normalDisplay = blockOnlyMode ? TaffyDisplay.NONE : TaffyDisplay.FLEX;
+        var blockDisplay = blockOnlyMode ? TaffyDisplay.FLEX : TaffyDisplay.NONE;
+        Style.importantPipeline(constantTree.getLayout(), l -> l.display(normalDisplay));
+        Style.importantPipeline(contextTree.getLayout(), l -> l.display(normalDisplay));
+        Style.importantPipeline(nodeTree.getLayout(), l -> l.display(normalDisplay));
+        Style.importantPipeline(blockTree.getLayout(), l -> l.display(blockDisplay));
     }
 
     public void setRecommendation(Consumer<TreeBuilder<ItemLibraryItem, Void>> builderConsumer) {
@@ -279,59 +437,67 @@ public class ItemLibrary extends UIElement {
                 .setDisplayName(Component.translatable("graph.library.recommendation")));
         builderConsumer.accept(recommendationBuilder);
         if (recommendationBuilder.isEmpty()) return;
-        recommendationTree.setRoot(recommendationBuilder.build());
-        recommendationTree.expandNode(recommendationTree.getRoot());
-        recommendationTree.setDisplay(true);
+        setRecommendationRoot(recommendationBuilder.build());
     }
 
+    /**
+     * Recommends every node the dragged wire can land on, the ones carrying the wire's own type first
+     * and the merely compatible ones after.
+     *
+     * <p>Compatibility is assignability ({@link PortModel#canConnectPort}), so a wire dragged off a
+     * {@code Float} port is offered every node with a port that accepts a float — which is most of
+     * them, and buries the handful the user actually meant under the rest. Sorting the exact type
+     * matches to the top puts those back on the first screen. Both groups keep the order
+     * {@link #getAllItems()} walks the trees in, so entries only ever move up, never shuffle.
+     */
     public void setPortRecommendation(PortModel sourcePort) {
         if (this.graphModel == null) return;
-        var testData = GraphNodeCreationData.ofOrphan(this.graphModel);
-        setRecommendation(builder -> {
-            getAllItems().forEach(item -> {
-                if (item instanceof NodeModelLibraryItem nodeItem) {
-                    if (nodeItem.createNode(testData) instanceof PortNodeModel portNodeModel) {
-                        if (portNodeModel.getPortFitToConnectTo(sourcePort) != null) {
-                            builder.leaf(nodeItem, null);
-                        }
-                    }
-                }
-            });
+        var sourceType = sourcePort.getDataTypeHandle();
+        var sameType = new ArrayList<NodeModelLibraryItem>();
+        var otherTypes = new ArrayList<NodeModelLibraryItem>();
+        getAllItems().forEach(item -> {
+            if (!(item instanceof NodeModelLibraryItem nodeItem)) return;
+            // same lookup the port sub-items use, so it hits the shared test model cache
+            var ports = getCompatiblePorts(nodeItem, sourcePort);
+            if (ports.isEmpty()) return;
+            (hasPortOfType(ports, sourceType) ? sameType : otherTypes).add(nodeItem);
         });
+        setRecommendation(builder -> {
+            sameType.forEach(item -> builder.leaf(item, null));
+            otherTypes.forEach(item -> builder.leaf(item, null));
+        });
+    }
+
+    /** Whether any of the ports carries exactly {@code type}, rather than one merely assignable to it. */
+    private static boolean hasPortOfType(List<PortModel> ports, @Nullable TypeHandle type) {
+        for (var port : ports) {
+            if (Objects.equals(port.getDataTypeHandle(), type)) return true;
+        }
+        return false;
     }
 
     public void showWithNodesFitPort(float mouseX, float mouseY, List<PortModel> portModels, Consumer<@Nullable ItemLibraryItem> onFinished) {
         if (portModels.isEmpty()) return;
+        testModels.clear();
         this.portModels = portModels;
-        title.setText(Component.translatable("graph.library.choose", Component.translatable(portModels.getFirst().getDataTypeHandle().getFriendlyName())));
+        attachPortChildren();
         setPortRecommendation(portModels.getFirst());
         show(mouseX, mouseY, onFinished);
+        // AFTER show(), which puts the generic "add a node" title up. This one names the type the
+        // dragged wire carries, and setting it first meant it was overwritten before anyone saw it.
+        title.setText(Component.translatable("graph.library.choose",
+                Component.translatable(portModels.getFirst().getDataTypeHandle().getFriendlyName())));
     }
 
-    public void hide() {
-        if (this.onFinished != null) {
-            this.onFinished.accept(null);
-        }
-        clearSelectedItemData(this.selectedItem);
-        clearSearchResult();
-        if (this.selectedTree != null)
-            this.selectedTree.setSelected(Collections.emptySet(), false);
-        this.searchField.setText("", false);
-        this.selectedTree = null;
-        this.selectedItem = null;
+    @Override
+    protected void onHide() {
+        // strip the port sub-items: the trees outlive this popup and the ports they point at don't
+        detachPortChildren();
+        testModels.clear();
         this.portModels = null;
-        this.onFinished = null;
-        this.recommendationTree.setRoot(null);
-        this.recommendationTree.setDisplay(false);
-        setDisplay(false);
-        blur();
-    }
-
-    protected void onNodeDecided(ItemLibraryItem itemLibraryItem) {
-        if (onFinished != null) {
-            onFinished.accept(itemLibraryItem);
-            onFinished = null;
-        }
-        hide();
+        // Clear block-mode state so the next show() starts fresh in default-tree mode.
+        this.blockOnlyMode = false;
+        this.blockTree.setRoot(null);
+        Style.importantPipeline(this.blockTree.getLayout(), l -> l.display(TaffyDisplay.NONE));
     }
 }

@@ -7,6 +7,7 @@ import com.lowdragmc.lowdraglib2.configurator.annotation.Configurable;
 import com.lowdragmc.lowdraglib2.editor.ClipboardManager;
 import com.lowdragmc.lowdraglib2.gui.ColorPattern;
 import com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture;
+import com.lowdragmc.lowdraglib2.gui.LDLibFonts;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.data.Cursor;
 import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollDisplay;
@@ -24,6 +25,7 @@ import com.lowdragmc.lowdraglib2.registry.annotation.LDLRegister;
 import com.lowdragmc.lowdraglib2.utils.HistoryStack;
 import com.lowdragmc.lowdraglib2.utils.TextUtilities;
 import com.lowdragmc.lowdraglib2.utils.XmlUtils;
+import com.lowdragmc.lowdraglib2.gui.ui.utils.KeyState;
 import com.mojang.blaze3d.systems.RenderSystem;
 import dev.vfyjxf.taffy.style.FlexDirection;
 import dev.vfyjxf.taffy.style.TaffyDisplay;
@@ -414,6 +416,7 @@ public class TextArea extends BindableUIElement<String[]> {
     }
 
     protected void updateScrollers() {
+        if (!LDLib2.isClient()) return;
         var maxWidth = getMaxWidth();
         var maxHeight = getMaxHeight();
         var leftWidth = maxWidth - contentView.getContentWidth();
@@ -455,6 +458,10 @@ public class TextArea extends BindableUIElement<String[]> {
     @Override
     public String[] getValue() {
         return Arrays.copyOf(value, value.length);
+    }
+
+    public List<String> getLines() {
+        return List.of(value);
     }
 
     public TextArea setLinesResponder(Consumer<String[]> textResponder) {
@@ -507,11 +514,26 @@ public class TextArea extends BindableUIElement<String[]> {
     // Editing helpers
     @Environment(EnvType.CLIENT)
     public Font getFont() {
-        return Minecraft.getInstance().font;
+        return LDLibFonts.font();
     }
 
     public float scale() {
+        if (!LDLib2.isClient()) return 1f;
         return textAreaStyle.fontSize() / getFont().lineHeight;
+    }
+
+    /**
+     * The rendered content of the character range {@code [from, to)} on {@code line}, with the styling it is
+     * actually drawn with. Measuring the width of this component keeps caret/selection positions aligned with
+     * the rendered text, including style-dependent advances such as bold. Subclasses that render styled text
+     * (e.g. syntax highlighting) should override this to reflect that styling.
+     */
+    @Environment(EnvType.CLIENT)
+    protected Component styledLineComponent(int line, int from, int to) {
+        var text = lines.get(line);
+        from = Mth.clamp(from, 0, text.length());
+        to = Mth.clamp(to, 0, text.length());
+        return TextUtilities.withFont(text.substring(from, to), getTextAreaStyle().font());
     }
 
     public float lineHeight() {
@@ -544,6 +566,7 @@ public class TextArea extends BindableUIElement<String[]> {
     }
 
     private float getMaxWidth() {
+        if (!LDLib2.isClient()) return 0f;
         var font = getFont();
         var s = scale();
         var max = 0f;
@@ -705,11 +728,11 @@ public class TextArea extends BindableUIElement<String[]> {
     }
 
     public Cursor getCursorUnderMouse(double mouseX, double mouseY) {
+        if (!LDLib2.isClient()) return new Cursor(0, 0);
         var x = contentView.getContentX();
         var y = contentView.getContentY();
         var s = scale();
         var font = getFont();
-        var textFont = getTextAreaStyle().font();
 
         // Determine line
         var relY = (float) (mouseY - y + scrollY) - 2;
@@ -719,18 +742,19 @@ public class TextArea extends BindableUIElement<String[]> {
         var lineText = lines.get(line);
         var relX = (float) (mouseX - x + scrollX);
 
-        // Estimate col using font width and substring fitting
-        var lineWithFont = TextUtilities.withFont(lineText, textFont);
-        var subWithFont = font.substrByWidth(lineWithFont, (int) (relX / s));
-        float fullLength = font.getSplitter().stringWidth(lineWithFont) * s;
+        // Estimate col using style-aware font width and substring fitting. substrByWidth() needs unscaled
+        // font pixels, so divide by scale; the comparison stays in rendered pixels (like subLength).
+        var styledLine = styledLineComponent(line, 0, lineText.length());
+        var subWithFont = font.substrByWidth(styledLine, (int) (relX / s));
+        float fullLength = font.getSplitter().stringWidth(styledLine) * s;
         float subLength = font.getSplitter().stringWidth(subWithFont) * s;
         int col;
         if (subLength >= fullLength) {
             col = lineText.length();
         } else {
-            var sub = subWithFont.getString();
-            float nextCharWidth = font.getSplitter().stringWidth(TextUtilities.withFont(lineText.substring(sub.length(), sub.length() + 1), textFont)) * s;
-            col = (relX - subLength) - nextCharWidth / 2f > 0 ? sub.length() + 1 : sub.length();
+            var subLen = subWithFont.getString().length();
+            float nextCharWidth = font.getSplitter().stringWidth(styledLineComponent(line, 0, subLen + 1)) * s - subLength;
+            col = (relX - subLength) - nextCharWidth / 2f > 0 ? subLen + 1 : subLen;
         }
         col = Mth.clamp(col, 0, lineText.length());
         return new Cursor(line, col);
@@ -743,7 +767,39 @@ public class TextArea extends BindableUIElement<String[]> {
         }
     }
 
+    /**
+     * The keys a focused editor <b>owns</b> — the ones the switch below acts on, and the ones about
+     * to type a character into it. Same reason as {@code TextField.ownsKey}: an ancestor's shortcut
+     * must not fire while the author is typing. Enter and the vertical moves are owned here because
+     * a text area does something with them.
+     *
+     * <p>Alt chords, Escape, Tab and anything this switch ignores are left to bubble.
+     */
+    @Override
+    public boolean isTextInput() {
+        return isEditable();
+    }
+
+    @Override
+    public boolean ownsKey(UIEvent event) {
+        if (!isEditable() || event.isAltDown()) {
+            return false;
+        }
+        return switch (event.keyCode) {
+            // ⚠️ Ctrl+Left/Right is this editor's own word jump, so those two are owned with the
+            // modifier down as well; every other chord belongs to whatever the container makes of it.
+            case GLFW.GLFW_KEY_LEFT, GLFW.GLFW_KEY_RIGHT -> true;
+            case GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_BACKSPACE, GLFW.GLFW_KEY_DELETE, GLFW.GLFW_KEY_UP,
+                 GLFW.GLFW_KEY_DOWN, GLFW.GLFW_KEY_HOME, GLFW.GLFW_KEY_END, GLFW.GLFW_KEY_PAGE_UP,
+                 GLFW.GLFW_KEY_PAGE_DOWN -> !event.isCtrlDown();
+            default -> !event.isCtrlDown() && KeyState.isTextKey(event.keyCode);
+        };
+    }
+
     protected void onKeyDown(UIEvent event) {
+        if (ownsKey(event)) {
+            event.stopPropagation();
+        }
         switch (event.keyCode) {
             case GLFW.GLFW_KEY_ENTER -> {
                 if (!isEditable()) return;
@@ -807,14 +863,14 @@ public class TextArea extends BindableUIElement<String[]> {
                 updateSelectionAfterMove();
             }
             default -> {
-                if (Screen.isSelectAll(event.keyCode)) {
+                if (KeyState.isSelectAll(event.keyCode)) {
                     selectAll();
-                } else if (Screen.isCopy(event.keyCode)) {
+                } else if (KeyState.isCopy(event.keyCode)) {
                     ClipboardManager.INSTANCE.copyDirect(getHighlightedText());
-                } else if (Screen.isPaste(event.keyCode)) {
+                } else if (KeyState.isPaste(event.keyCode)) {
                     if (!isEditable()) return;
                     insertText(Minecraft.getInstance().keyboardHandler.getClipboard());
-                } else if (Screen.isCut(event.keyCode)) {
+                } else if (KeyState.isCut(event.keyCode)) {
                     if (!isEditable()) return;
                     ClipboardManager.INSTANCE.copyDirect(getHighlightedText());
                     insertText(""); // replace selection with empty
@@ -1148,7 +1204,8 @@ public class TextArea extends BindableUIElement<String[]> {
             guiContext.pose.pushPose();
             guiContext.pose.translate(drawX, lineY, 0);
             guiContext.pose.scale(scale, scale, 1);
-            guiContext.graphics.drawString(
+            LDLibFonts.drawText(
+                    guiContext.graphics,
                     font,
                     textWithFont,
                     0,
@@ -1170,7 +1227,8 @@ public class TextArea extends BindableUIElement<String[]> {
         guiContext.pose.pushPose();
         guiContext.pose.translate(x, y, 0);
         guiContext.pose.scale(scale, scale, 1);
-        guiContext.graphics.drawString(
+        LDLibFonts.drawText(
+                guiContext.graphics,
                 font,
                 textAreaStyle.placeholder(),
                 0,
@@ -1203,11 +1261,11 @@ public class TextArea extends BindableUIElement<String[]> {
                 from = Mth.clamp(from, 0, text.length());
                 to = Mth.clamp(to, 0, text.length());
 
-                float minX = font.getSplitter().stringWidth(TextUtilities.withFont(text.substring(0, from), textFont)) * scale - scrollX;
+                float minX = font.getSplitter().stringWidth(styledLineComponent(line, 0, from)) * scale - scrollX;
                 float maxX;
                 if (line == end.line()) {
                     if (from == to) continue;
-                    maxX = font.getSplitter().stringWidth(TextUtilities.withFont(text.substring(0, to), textFont)) * scale - scrollX;
+                    maxX = font.getSplitter().stringWidth(styledLineComponent(line, 0, to)) * scale - scrollX;
                 } else {
                     maxX = maxWidth;
                 }
@@ -1228,8 +1286,7 @@ public class TextArea extends BindableUIElement<String[]> {
     @Environment(EnvType.CLIENT)
     protected void drawCursor(GUIContext guiContext, Font font, ResourceLocation textFont, float scale, float x, float y) {
         if (isVisible() && isFocused() && isDisplayed() && (!isActive() || System.currentTimeMillis() % 1000 < 500)) {
-            var current = lines.get(cursorLine);
-            float cursorPosX = font.getSplitter().stringWidth(TextUtilities.withFont(current.substring(0, cursorCol), textFont)) * scale;
+            float cursorPosX = font.getSplitter().stringWidth(styledLineComponent(cursorLine, 0, cursorCol)) * scale;
             float cursorY = y + cursorLine * lineHeight() - scrollY;
             DrawerHelper.drawSolidRect(
                     guiContext.graphics,

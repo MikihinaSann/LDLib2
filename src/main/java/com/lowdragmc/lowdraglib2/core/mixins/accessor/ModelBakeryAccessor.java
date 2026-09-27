@@ -8,6 +8,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;
 import org.spongepowered.asm.mixin.gen.Invoker;
 
+import java.util.HashMap;
 import java.util.Map;
 
 @Mixin(ModelBakery.class)
@@ -17,5 +18,12 @@ public interface ModelBakeryAccessor {
     UnbakedModel invokeGetModel(ResourceLocation modelLocation);
 
     @Accessor
+    Map<ResourceLocation, UnbakedModel> getUnbakedCache();
+
+    @Accessor
     Map<ModelResourceLocation, UnbakedModel> getTopLevelModels();
+
+    @Accessor
+    UnbakedModel getMissingModel();
+
 }

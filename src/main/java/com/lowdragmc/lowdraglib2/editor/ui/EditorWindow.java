@@ -2,6 +2,7 @@ package com.lowdragmc.lowdraglib2.editor.ui;
 
 import com.google.common.collect.Maps;
 import com.lowdragmc.lowdraglib2.LDLib2;
+import com.lowdragmc.lowdraglib2.editor.settings.AppearanceSettings;
 import com.lowdragmc.lowdraglib2.gui.texture.DynamicTexture;
 import com.lowdragmc.lowdraglib2.gui.texture.Icons;
 import com.lowdragmc.lowdraglib2.gui.ColorPattern;
@@ -10,7 +11,6 @@ import com.lowdragmc.lowdraglib2.gui.ui.data.Horizontal;
 import com.lowdragmc.lowdraglib2.gui.ui.data.Vertical;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Button;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TextElement;
-import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvent;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
 import com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap;
 import com.lowdragmc.lowdraglib2.gui.ui.rendering.GUIContext;
@@ -24,13 +24,12 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.components.toasts.SystemToast;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
-import org.apache.commons.lang3.ArrayUtils;
 import org.appliedenergistics.yoga.*;
 import org.joml.Vector2f;
 
 import javax.annotation.Nonnull;
 import org.jetbrains.annotations.Nullable;
-import java.util.Arrays;
+
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -72,6 +71,19 @@ public class EditorWindow extends UIElement {
                     Component.translatable("editor.minimized.title"),
                     Component.translatable("editor.minimized.tips")
             ));
+            if (editorWindow.currentEditor != null && LDLib2.isClient()) {
+                editorWindow.currentEditor.editorSettings.getSettings(AppearanceSettings.ID).ifPresent(settings -> {
+                    if (settings instanceof AppearanceSettings appearanceSettings) {
+                        var scale = appearanceSettings.getScreenScale();
+                        var minecraft = Minecraft.getInstance();
+                        var guiScale = minecraft.options.guiScale();
+                        if (guiScale.get() != scale) {
+                            guiScale.set(scale);
+                            minecraft.resizeDisplay();
+                        }
+                    }
+                });
+            }
             return editorWindow;
         }
         return new EditorWindow(windowID, editorCreator);
@@ -162,11 +174,13 @@ public class EditorWindow extends UIElement {
                         maximizeWindow();
                     }
                 })
+                .addClass("__white_icon__")
                 .layout(layout -> layout.height(12)), 0);
         if (windowID != null) {
             newEditor.buttonContainer.addChildAt(new Button().noText()
                     .addPreIcon(Icons.WINDOW_MINIMIZE)
                     .setOnClick(e -> minimizeWindow())
+                    .addClass("__white_icon__")
                     .layout(layout -> layout.height(12)), 0);
         }
         newEditor.topPlaceholder.addEventListener(UIEvents.DOUBLE_CLICK, e -> {
@@ -215,19 +229,7 @@ public class EditorWindow extends UIElement {
         }
         if (editors.isEmpty()) {
             currentEditor = null;
-
-            if (LDLib2.isClient()) {
-                var minecraft = Minecraft.getInstance();
-                var guiScale = minecraft.options.guiScale();
-                if (guiScale.get() != initialScreenScale) {
-                    guiScale.set(initialScreenScale);
-                    minecraft.resizeDisplay();
-                }
-            }
-
-            if (getModularUI() != null && getModularUI().getScreen() != null) {
-                getModularUI().getScreen().onClose();
-            }
+            closeScreen();
         } else {
             showEditor(editors.lastEntry().getKey());
         }
@@ -251,9 +253,36 @@ public class EditorWindow extends UIElement {
         }
     }
 
+    /**
+     * Whether this window can be minimized at all.
+     *
+     * <p>It needs an id: minimized windows are parked in a map keyed by it and re-opened through
+     * {@link #open}, so a window without one would close with no way back. That is why the title bar
+     * only shows the minimize button when there is an id.
+     */
+    public boolean canMinimize() {
+        return windowID != null;
+    }
+
     public void minimizeWindow() {
+        // Guarded rather than left to the caller: the button is hidden for an id-less window, but a
+        // keymap action or a script has no way to know that, and the map this parks the window in is a
+        // ConcurrentHashMap - a null key there is an NPE from somewhere far away from the cause.
+        if (!canMinimize()) return;
         if (EditorWindow.MINIMIZED_WINDOWS.containsKey(windowID)) return;
         EditorWindow.MINIMIZED_WINDOWS.put(windowID, this);
+        closeScreen();
+    }
+
+    private void closeScreen() {
+        if (LDLib2.isClient()) {
+            var minecraft = Minecraft.getInstance();
+            var guiScale = minecraft.options.guiScale();
+            if (guiScale.get() != initialScreenScale) {
+                guiScale.set(initialScreenScale);
+                minecraft.resizeDisplay();
+            }
+        }
         if (getModularUI() != null && getModularUI().getScreen() != null) {
             getModularUI().getScreen().onClose();
         }
@@ -328,9 +357,9 @@ public class EditorWindow extends UIElement {
                             }
                         }).setOverflowVisible(false),
                 new Button().noText().buttonStyle(style -> {
-                    style.baseTexture(Icons.REMOVE);
-                    style.hoverTexture(Icons.REMOVE.copy().setColor(ColorPattern.GRAY.color));
-                    style.pressedTexture(Icons.REMOVE);
+                    style.baseTexture(Icons.CLOSE);
+                    style.hoverTexture(Icons.CLOSE.copy().setColor(ColorPattern.GRAY.color));
+                    style.pressedTexture(Icons.CLOSE);
                 }).setOnClick(e -> {
                     showEditor(editor);
                     editor.exit();

@@ -1,14 +1,21 @@
 package com.lowdragmc.lowdraglib2.nodegraphtookit.model.graph;
 
 import com.lowdragmc.lowdraglib2.LDLib2;
+import com.lowdragmc.lowdraglib2.editor.resource.IResourcePath;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.api.graph.Graph;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.api.graph.GraphLogger;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.node.Node;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.port.PortCapacity;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.port.PortDirection;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.port.PortType;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.editor.IGraphReferenceResolver;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.command.IGraphCommand;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.itemlibrary.NodeModelLibraryItem;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.type.TypeHandle;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.type.TypeHandleHelpers;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.type.TypeHandles;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.utils.ReorderType;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.api.variable.VariableKind;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.*;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.constant.Constant;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.constant.TypeConstant;
@@ -23,12 +30,14 @@ import com.lowdragmc.lowdraglib2.nodegraphtookit.model.wiget.PlacematModel;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.wiget.StickyNoteModel;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.wire.WireModel;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.wire.WirePlaceHolder;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.model.wire.WireReroutePointModel;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.wire.WireSide;
 import lombok.Getter;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
+import net.minecraft.network.chat.Component;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Vector2f;
@@ -36,6 +45,7 @@ import org.joml.Vector2f;
 import java.util.*;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 public abstract class GraphModel extends GraphElementModel implements IGraphElementContainer {
@@ -44,6 +54,12 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
     private List<AbstractNodeModel> nodeModels;
     @Getter
     private List<WireModel> wireModels;
+    /**
+     * Reroute points, owned by the graph rather than by any one wire: several wires share a point,
+     * and each stores only which point it leaves from. Layout only — see {@link WireReroutePointModel}.
+     */
+    @Getter
+    private List<WireReroutePointModel> wireReroutePointModels;
     @Getter
     private List<PlacematModel> placematModels;
     @Getter
@@ -71,6 +87,19 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
     private Map<UUID, PlaceholderData> placeholderData;
     @Getter
     private Set<String> existingVariableNames;
+    /**
+     * Runtime parent pointer for local subgraphs — set when this GraphModel is added to a parent's
+     * {@link #localSubGraphs}. Not persisted; rebuilt during deserialization.
+     */
+    @Getter @Nullable
+    private GraphModel parentGraph;
+    /**
+     * Runtime context plugged in by the editor: provides external graph resolution and similar
+     * services that the pure model layer should not depend on directly. Null outside an editor.
+     */
+    @Getter
+    @Nullable
+    private IGraphReferenceResolver referenceResolver;
 
     /**
      * Creates a new graph model.
@@ -78,6 +107,7 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
     protected GraphModel() {
         nodeModels = new ArrayList<>();
         wireModels = new ArrayList<>();
+        wireReroutePointModels = new ArrayList<>();
         placematModels = new ArrayList<>();
         stickyNoteModels = new ArrayList<>();
         placeholders = new ArrayList<>();
@@ -114,6 +144,53 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
     public abstract List<TypeHandle> getSupportTypes();
 
     /**
+     * Retrieves node classes shown in the item library.
+     */
+    public List<Class<? extends Node>> getLibrarySupportNodes() {
+        return getSupportNodes();
+    }
+
+    /**
+     * Retrieves type handles shown as constant nodes in the item library.
+     */
+    public List<TypeHandle> getLibrarySupportTypes() {
+        return getSupportTypes();
+    }
+
+    /**
+     * Retrieves type handles shown when creating or editing blackboard variables.
+     */
+    public List<TypeHandle> getVariableSupportTypes() {
+        return getSupportTypes();
+    }
+
+    /**
+     * Retrieves the variable kinds that may be exposed as ports when this graph is used as a subgraph.
+     */
+    public Set<VariableKind> getSupportedSubgraphVariableKinds() {
+        return Set.of(VariableKind.INPUT, VariableKind.OUTPUT);
+    }
+
+    public boolean supportsSubgraphVariableKind(VariableKind kind) {
+        return getSupportedSubgraphVariableKinds().contains(kind);
+    }
+
+    /**
+     * Clamps variable modifier flags to the subgraph exposure directions supported by this graph.
+     */
+    public ModifierFlags sanitizeSubgraphVariableModifiers(@Nullable ModifierFlags flags) {
+        if (flags == null || flags == ModifierFlags.NONE) return ModifierFlags.NONE;
+
+        boolean read = flags.hasFlag(ModifierFlags.READ) && supportsSubgraphVariableKind(VariableKind.INPUT);
+        boolean write = flags.hasFlag(ModifierFlags.WRITE) && supportsSubgraphVariableKind(VariableKind.OUTPUT);
+
+        if (read && write) return ModifierFlags.READ_WRITE;
+        if (read) return ModifierFlags.READ;
+        if (write) return ModifierFlags.WRITE;
+        return ModifierFlags.NONE;
+    }
+
+    /**
      * Whether it is allowed to create {@link WirePortalModel} and add them to the graph.
      */
     public boolean allowPortalCreation() {
@@ -131,7 +208,7 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
      * Whether it is allowed to create {@link VariableDeclarationModelBase} and add them to the graph.
      */
     public boolean allowExposedVariableCreation() {
-        return false;
+        return true;
     }
 
     /**
@@ -142,10 +219,70 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
     }
 
     /**
+     * Whether vertical input ports show their embedded constant editor (configurator) while
+     * unconnected. Default is {@code false}: vertical ports are typically compact top/bottom
+     * connectors with no inline value field. Override to opt back in.
+     */
+    public boolean showVerticalPortConfigurator() {
+        return false;
+    }
+
+    /**
      * Whether the graph is a state machine graph.
      */
     public boolean isStateMachineGraph() {
         return false;
+    }
+
+    /**
+     * Vetoes an editor command before it executes; default {@code true} (allow). Consulted by
+     * {@code GraphView.dispatchCommand}. {@link CustomGraphModelImpl} delegates to
+     * {@link com.lowdragmc.lowdraglib2.nodegraphtookit.api.graph.Graph#canExecuteCommand}.
+     */
+    public boolean canExecuteCommand(IGraphCommand command) {
+        return true;
+    }
+
+    /**
+     * Called after an editor command has executed; default no-op. {@link CustomGraphModelImpl}
+     * delegates to {@link com.lowdragmc.lowdraglib2.nodegraphtookit.api.graph.Graph#onCommandExecuted}.
+     */
+    public void onCommandExecuted(IGraphCommand command) {
+    }
+
+    /**
+     * Called after the editor's current graph state has been loaded or refreshed. Implementations
+     * may emit validation diagnostics into {@code logger}. Overrides should call {@code super} so
+     * the built-in diagnostics (missing ports) are always reported.
+     */
+    public void onGraphChanged(GraphLogger logger) {
+        reportMissingPorts(logger);
+    }
+
+    /**
+     * Emit an error for every MISSING_PORT placeholder still present in the graph — each marks an
+     * unresolved connection (a broken/renamed subgraph reference, a removed port whose wire was
+     * preserved, ...) the user must resolve. Runs for every graph type so the diagnostic doesn't
+     * depend on each {@link Graph} subclass opting in.
+     */
+    protected void reportMissingPorts(GraphLogger logger) {
+        forEachMissingPort((nm, port) -> logger.error(Component.literal("Missing port ")
+                .append(port.getDisplayName())
+                .append(Component.literal(" on node "))
+                .append(nm.getTitle()), port));
+    }
+
+    /** Visits every MISSING_PORT placeholder in the graph over a snapshot, so the action may remove them. */
+    private void forEachMissingPort(BiConsumer<NodeModel, PortModel> action) {
+        for (var nodeModel : nodeModels) {
+            if (!(nodeModel instanceof NodeModel nm)) continue;
+            for (var port : new ArrayList<>(nm.getInputsById().values())) {
+                if (port.getPortType() == PortType.MISSING_PORT) action.accept(nm, port);
+            }
+            for (var port : new ArrayList<>(nm.getOutputsById().values())) {
+                if (port.getPortType() == PortType.MISSING_PORT) action.accept(nm, port);
+            }
+        }
     }
 
     /**
@@ -179,6 +316,26 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
         GraphChangeDescription result = currentChangeDescription;
         currentChangeDescription = new GraphChangeDescription();
         return result;
+    }
+
+    /**
+     * Runs {@code body} with the change description swapped for a throwaway one, so whatever it
+     * creates is not reported to the UI.
+     *
+     * <p>For work that has to build models in order to <em>ask</em> something rather than to change
+     * the graph — {@link CustomGraphModelImpl#detectSupportedTypes} instantiates every registered node
+     * class to harvest its port types. Those nodes are spawned orphaned and thrown away, but their
+     * ports still land in the change set, which then reports thousands of new models the view has no
+     * elements for.</p>
+     */
+    public <T> T withIsolatedChanges(Supplier<T> body) {
+        GraphChangeDescription saved = currentChangeDescription;
+        currentChangeDescription = new GraphChangeDescription();
+        try {
+            return body.get();
+        } finally {
+            currentChangeDescription = saved;
+        }
     }
 
     // ----------------------------
@@ -358,6 +515,7 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
         elementsByUID = new HashMap<>();
         nodeModels.forEach(this::registerElement);
         wireModels.forEach(this::registerElement);
+        wireReroutePointModels.forEach(this::registerElement);
         stickyNoteModels.forEach(this::registerElement);
         placematModels.forEach(this::registerElement);
         // Some variables may not be under any section.
@@ -408,6 +566,26 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
             unregisterElement(portModel);
         }
     }
+
+    /**
+     * Registers a block node (and recursively its ports) in the graph's UID map. Called by
+     * {@link com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.ContextNodeModel#insertBlock}
+     * after the block has been attached to its parent context. Blocks are <em>not</em> added
+     * to {@link #nodeModels} — they remain reachable only through their parent context.
+     */
+    public void registerBlockNode(com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.BlockNodeModel block) {
+        if (block == null) return;
+        registerElement(block);
+    }
+
+    /**
+     * Unregisters a block node (and recursively its ports) from the graph's UID map.
+     */
+    public void unregisterBlockNode(com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.BlockNodeModel block) {
+        if (block == null) return;
+        unregisterElement(block);
+    }
+
 
     /**
      * Registers a node preview model.
@@ -464,10 +642,14 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
             }
         }
 
+        onElementsDeleting(elementsByType);
+
         deleteVariableDeclarations(elementsByType.variableDeclarationsModels, false);
         deleteGroups(elementsByType.groupModels);
         deleteStickyNotes(elementsByType.stickyNoteModels);
         deletePlacemats(elementsByType.placematModels);
+        // Before the wires: a point on a wire that is itself being deleted goes with the wire.
+        deleteWireReroutePoints(elementsByType.wireReroutePointModels);
         deleteWires(elementsByType.wireModels);
         deleteNodes(elementsByType.nodeModels, false, true);
 
@@ -490,6 +672,21 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
 //        {
 //            statePortModel.UpdateAllOffsets();
 //        }
+    }
+
+    /**
+     * Called by {@link #deleteElements} once the deletion set has been fully expanded (wires
+     * pulled in by their nodes, nodes pulled in by their variable declarations, …) and just
+     * <em>before</em> anything is actually removed — so the models passed in are still fully
+     * wired and can be inspected.
+     *
+     * <p>Override to release resources a subclass keeps alongside an element, e.g. a nested
+     * subgraph owned by a particular wire. Safe with respect to undo: commands snapshot the
+     * model before executing, so whatever is released here is restored by the snapshot.
+     *
+     * @param elementsByType the expanded set about to be deleted
+     */
+    protected void onElementsDeleting(ElementsByType elementsByType) {
     }
 
     /**
@@ -516,9 +713,18 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
                 case WireModel wireModel:
                     removeWire(wireModel);
                     break;
-//                case BlockNodeModel blockNodeModel:
-//                    UnregisterBlockNode(blockNodeModel);
-//                    break;
+                case WireReroutePointModel reroutePoint:
+                    removeWireReroutePoint(reroutePoint);
+                    break;
+                case com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.BlockNodeModel blockNodeModel:
+                    // Blocks live inside a context, not in the top-level nodeModels list.
+                    // Route through the parent so its block list and wires stay consistent.
+                    if (blockNodeModel.getContextNodeModel() != null) {
+                        blockNodeModel.getContextNodeModel().removeBlock(blockNodeModel);
+                    } else {
+                        unregisterBlockNode(blockNodeModel);
+                    }
+                    break;
                 case AbstractNodeModel nodeModel:
                     removeNode(nodeModel);
                     break;
@@ -661,6 +867,20 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
         return variable.getDataTypeHandle().equals(TypeHandles.EXECUTION_FLOW)
                 || variable.getModifiers() != ModifierFlags.WRITE
                 || graphModel.findReferencesInGraph(VariableNodeModel.class, variable).isEmpty();
+    }
+
+    /**
+     * The item that spawns a node <b>writing</b> this variable, or null for a graph that has no such
+     * node — the default, and what keeps dropping a variable on the canvas meaning "read it".
+     *
+     * <p>When it is non-null the drop offers the choice instead, which is the choice Unreal offers
+     * for the same gesture. It answers with a library item rather than a node so that either arm goes
+     * through the ordinary create-node command and is undoable like any other node creation; a graph
+     * that answers here also decides how the spawned node remembers which variable it writes.
+     */
+    @Nullable
+    public NodeModelLibraryItem createVariableSetterItem(VariableDeclarationModelBase variable) {
+        return null;
     }
 
     protected Class<? extends VariableNodeModel> getVariableNodeType() {
@@ -924,6 +1144,209 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
         getCurrentGraphChangeDescription().addNewModel(wireModel);
     }
 
+    // region reroute points
+
+    /**
+     * Creates a reroute point hanging off {@code upstream} (or directly off a source port when
+     * {@code upstream} is {@code null}) and adds it to the graph.
+     *
+     * <p>The point is not attached to any wire yet — {@link WireModel#setRouteVia} or
+     * {@link #insertReroutePointOnWire} does that.</p>
+     *
+     * @param position top-left in canvas content coordinates (see {@link WireReroutePointModel#centerToPosition})
+     * @param upstream the point this one follows, or {@code null} to start a chain
+     * @param uid      a uid to restore, or {@code null} to allocate a fresh one
+     */
+    public WireReroutePointModel createWireReroutePoint(Vector2f position,
+                                                        @Nullable WireReroutePointModel upstream,
+                                                        @Nullable UUID uid) {
+        var point = new WireReroutePointModel(position);
+        point.setGraphModel(this);
+        if (uid != null) point.setUid(uid);
+        point.setUpstream(upstream);
+
+        wireReroutePointModels.add(point);
+        registerElement(point);
+        getCurrentGraphChangeDescription().addNewModel(point);
+        return point;
+    }
+
+    /**
+     * Bends {@code wire} at {@code index}, counting segments along {@code fromPort → point… → toPort}.
+     *
+     * <p>Bending a segment that ends at an existing point splices the new one in <em>upstream of that
+     * point</em>, so every wire and branch sharing that trunk bends with it — which is the whole
+     * reason a reroute point exists. Bending the last segment, the one running into {@code toPort},
+     * affects this wire alone because nothing else travels along it.</p>
+     *
+     * @param index    the segment to bend, clamped into {@code [0, chainLength]}
+     * @param position top-left of the new point in canvas content coordinates
+     */
+    public WireReroutePointModel insertReroutePointOnWire(WireModel wire, int index, Vector2f position) {
+        var chain = wire.getReroutePoints();
+        if (index < 0 || index >= chain.size()) {
+            var point = createWireReroutePoint(position, wire.getRouteVia(), null);
+            wire.setRouteVia(point);
+            return point;
+        }
+        var downstream = chain.get(index);
+        var point = createWireReroutePoint(position, downstream.getUpstream(), null);
+        downstream.setUpstream(point);
+        return point;
+    }
+
+    /**
+     * Every wire drawn through {@code point}. Several is the normal case: that is what makes a
+     * reroute point a fan-out, and each of those wires is an ordinary {@code fromPort → toPort}
+     * connection on the same output port.
+     */
+    /**
+     * Re-sources a reroute point: every wire through it now comes from {@code sourcePort} instead.
+     * This is what dropping an output port onto the point's input side means.
+     *
+     * <p>The point is also detached from its own upstream chain, because that chain may still feed
+     * other branches — leaving it attached would make one point serve two different source ports,
+     * and every wire through a point must agree on where it comes from.</p>
+     *
+     * <p>Unlike everything else about reroute points this <em>is</em> a topology change: it re-points
+     * real wires, exactly as if the user had dragged each one's origin by hand.</p>
+     */
+    public void setReroutePointSource(WireReroutePointModel point, PortModel sourcePort) {
+        if (point == null || sourcePort == null) return;
+        var wires = getWiresThroughReroutePoint(point);
+        if (wires.isEmpty()) return;
+
+        point.setUpstream(null);
+        for (var wire : wires) {
+            if (wire.getFromPort() != sourcePort) {
+                wire.setPort(WireSide.FROM, sourcePort);
+            }
+        }
+        // The old upstream may have been feeding nothing but this branch.
+        sweepOrphanReroutePoints();
+    }
+
+    /**
+     * Writes reroute points as {@code uid + position + upstream uid}. The collection must be
+     * upstream-closed — a chain from {@link WireModel#getReroutePoints()} always is.
+     */
+    protected static ListTag writeReroutePoints(Collection<WireReroutePointModel> points) {
+        var list = new ListTag();
+        for (var point : points) {
+            if (point == null) continue;
+            var entry = new CompoundTag();
+            entry.putUUID("uid", point.getUid());
+            entry.putFloat("x", point.getPosition().x);
+            entry.putFloat("y", point.getPosition().y);
+            if (point.getUpstream() != null) {
+                entry.putUUID("upstream", point.getUpstream().getUid());
+            }
+            list.add(entry);
+        }
+        return list;
+    }
+
+    /**
+     * Restores reroute points written by {@link #writeReroutePoints} and adds them to the graph.
+     *
+     * @param freshUids      {@code true} to allocate new uids (paste, so an in-graph paste cannot
+     *                       collide with the originals), {@code false} to keep them (load)
+     * @param positionOffset shifts every point, or {@code null} to keep the stored positions
+     * @return the serialized uid of each point mapped to the restored instance, for resolving the
+     *         {@code routeVia} references that follow
+     */
+    protected Map<UUID, WireReroutePointModel> readReroutePoints(ListTag list, boolean freshUids,
+                                                                 @Nullable Vector2f positionOffset) {
+        var byOldUid = new HashMap<UUID, WireReroutePointModel>();
+        var pendingUpstream = new LinkedHashMap<WireReroutePointModel, UUID>();
+        for (int i = 0; i < list.size(); i++) {
+            var entry = list.getCompound(i);
+            if (!entry.hasUUID("uid")) continue;
+            var position = new Vector2f(entry.getFloat("x"), entry.getFloat("y"));
+            if (positionOffset != null) position.add(positionOffset);
+            var oldUid = entry.getUUID("uid");
+            var point = createWireReroutePoint(position, null, freshUids ? null : oldUid);
+            byOldUid.put(oldUid, point);
+            if (entry.hasUUID("upstream")) {
+                pendingUpstream.put(point, entry.getUUID("upstream"));
+            }
+        }
+        // Second pass: a point may be listed before the one it hangs off.
+        pendingUpstream.forEach((point, upstreamUid) -> point.setUpstream(byOldUid.get(upstreamUid)));
+        return byOldUid;
+    }
+
+    public List<WireModel> getWiresThroughReroutePoint(@Nullable WireReroutePointModel point) {
+        if (point == null) return List.of();
+        var result = new ArrayList<WireModel>();
+        for (var wire : wireModels) {
+            if (wire != null && WireReroutePointModel.chainContains(wire.getRouteVia(), point)) {
+                result.add(wire);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Deletes reroute points. Purely a layout edit — the wires through them keep their ports and
+     * simply lose one bend.
+     *
+     * @param points the reroute points to delete
+     */
+    public void deleteWireReroutePoints(Collection<? extends WireReroutePointModel> points) {
+        for (var point : List.copyOf(points)) {
+            if (point != null && point.isDeletable()) {
+                removeWireReroutePoint(point);
+            }
+        }
+    }
+
+    /**
+     * Splices a reroute point out of the routing tree: everything that hung off it — downstream
+     * points and the wires routed via it — is re-linked to its own upstream, so the branch simply
+     * straightens by one bend. No connection is touched.
+     */
+    protected void removeWireReroutePoint(WireReroutePointModel point) {
+        if (point == null) return;
+        var upstream = point.getUpstream();
+        for (var other : wireReroutePointModels) {
+            if (other != null && other.getUpstream() == point) {
+                other.setUpstream(upstream);
+            }
+        }
+        for (var wire : wireModels) {
+            if (wire != null && wire.getRouteVia() == point) {
+                wire.setRouteVia(upstream);
+            }
+        }
+        point.setUpstream(null);
+        unregisterElement(point);
+        wireReroutePointModels.remove(point);
+        currentChangeDescription.addDeletedModel(point);
+    }
+
+    /**
+     * Drops every reroute point no wire routes through any more. A point exists only to shape the
+     * wires that pass through it, so one left behind by a wire deletion is invisible dead weight.
+     */
+    protected void sweepOrphanReroutePoints() {
+        if (wireReroutePointModels.isEmpty()) return;
+        var reachable = new HashSet<WireReroutePointModel>();
+        for (var wire : wireModels) {
+            if (wire == null) continue;
+            reachable.addAll(wire.getReroutePoints());
+        }
+        for (var point : List.copyOf(wireReroutePointModels)) {
+            if (point != null && !reachable.contains(point)) {
+                // Straight removal, not a splice: nothing downstream survives to be re-linked.
+                point.setUpstream(null);
+                unregisterElement(point);
+                wireReroutePointModels.remove(point);
+                currentChangeDescription.addDeletedModel(point);
+            }
+        }
+    }
+
     protected void removeWire(WireModel wireModel) {
         if (wireModel != null) {
             unregisterElement(wireModel);
@@ -966,6 +1389,22 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
     }
 
     public void deleteWire(WireModel wireToDelete) {
+        deleteWireInternal(wireToDelete);
+        sweepOrphanReroutePoints();
+    }
+
+    /**
+     * Deletes wires from the graph.
+     * @param wireModels The list of wires to delete.
+     */
+    public void deleteWires(Collection<? extends WireModel> wireModels) {
+        List.copyOf(wireModels).forEach(this::deleteWireInternal);
+        // Once, after the whole batch: a reroute point can be left orphaned by the last wire that
+        // used it, and sweeping per wire would rescan the graph for every deletion.
+        sweepOrphanReroutePoints();
+    }
+
+    private void deleteWireInternal(WireModel wireToDelete) {
         if (wireToDelete != null && wireToDelete.isDeletable()) {
             if (wireToDelete instanceof WirePlaceHolder placeHolder) {
                 removePlaceholder(placeHolder);
@@ -982,14 +1421,6 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
                 removeWire(wireToDelete);
             }
         }
-    }
-
-    /**
-     * Deletes wires from the graph.
-     * @param wireModels The list of wires to delete.
-     */
-    public void deleteWires(Collection<? extends WireModel> wireModels) {
-        List.copyOf(wireModels).forEach(this::deleteWire);
     }
 
     /**
@@ -1261,6 +1692,7 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
                                                                    @Nullable Constant initializationModel,
                                                                    @Nullable UUID uid,
                                                                    @Nullable SpawnFlags spawnFlags) {
+        modifierFlags = sanitizeSubgraphVariableModifiers(modifierFlags);
         if (isContainerGraph() && (modifierFlags == ModifierFlags.READ || modifierFlags == ModifierFlags.WRITE)) {
             LDLib2.LOGGER.warn("Cannot create an input or an output variable declaration in a container graph.");
             return null;
@@ -1306,6 +1738,7 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
                                                                    @Nullable UUID uid,
                                                                    @Nullable BiConsumer<VariableDeclarationModelBase, Constant> initializationCallback,
                                                                    @Nullable SpawnFlags spawnFlags) {
+        modifierFlags = sanitizeSubgraphVariableModifiers(modifierFlags);
         if (isContainerGraph() && (modifierFlags == ModifierFlags.READ || modifierFlags == ModifierFlags.WRITE)) {
             LDLib2.LOGGER.warn("Cannot create an input or an output variable declaration in a container graph.");
             return null;
@@ -1461,6 +1894,13 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
         if (parent instanceof GroupModel group) {
             group.removeItem(variableDeclarationModel);
         }
+
+        // exposed-variable removal must update outer subgraph node ports
+        var mods = variableDeclarationModel.getModifiers();
+        if (mods != null && mods != ModifierFlags.NONE) {
+            redefineSubgraphNodeModels();
+        }
+
         return parent;
     }
 
@@ -1731,27 +2171,377 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
 
     // endregion
 
+    // region subgraph extraction
+
+    /** Tracks a wire crossing the selection boundary. */
+    private record CrossingWire(WireModel wire, boolean fromSelected) {}
+
+    /**
+     * Extracts a heterogeneous selection (nodes, placemats, sticky notes — wires are ignored as
+     * they're implicit in the node selection) into a fresh local subgraph and inserts a
+     * {@link SubgraphNodeModel} at the selection's centroid that references it.
+     *
+     * <p>Selection-handling rules:</p>
+     * <ul>
+     *   <li><b>{@link WireModel}</b> — filtered out. Internal wires (both endpoints in the
+     *       selected nodes) are copied automatically by {@link #copyElements}; crossing wires
+     *       are reconnected via auto-generated variables (see below).</li>
+     *   <li><b>{@link PlacematModel}</b> — accepted only if all its currently contained nodes
+     *       are also in the selection; otherwise rejected (we'd leave dangling nodes outside).
+     *       The placemat itself is moved into the subgraph.</li>
+     *   <li><b>{@link StickyNoteModel}</b> — moved into the subgraph as-is.</li>
+     *   <li><b>{@link SubgraphNodeModel}</b> (LOCAL) — its referenced local subgraph is
+     *       transferred from this graph's {@code localSubGraphs} to the newly created one's
+     *       <em>before paste</em>, so the pasted SubgraphNodeModel can resolve to it.</li>
+     *   <li><b>{@link SubgraphNodeModel}</b> (EXTERNAL) — copy/paste handles it; only the
+     *       {@code IResourcePath} reference travels, no graph data is moved.</li>
+     * </ul>
+     *
+     * <p>Crossing wires are preserved by minting a variable inside the new subgraph for each
+     * (READ for inbound value, WRITE for outbound), wiring a {@code VariableNodeModel} to the
+     * pasted internal port, and the outer SubgraphNodeModel's auto-port to the original external
+     * port.</p>
+     *
+     * @return the newly created outer subgraph node, or {@code null} if extraction failed.
+     */
+    @Nullable
+    public SubgraphNodeModel extractSelectionToLocalSubgraph(List<? extends GraphElementModel> selection,
+                                                             HolderLookup.Provider provider) {
+        if (selection == null || selection.isEmpty()) return null;
+        if (!allowSubgraphCreation()) {
+            LDLib2.LOGGER.warn("Subgraph creation is disabled on this graph.");
+            return null;
+        }
+
+        // Partition the heterogeneous selection. Wires are filtered out — internal wires get
+        // copied implicitly by copyElements, crossing wires get reconnected via variables.
+        var selectedNodes = new ArrayList<AbstractNodeModel>();
+        var selectedPlacemats = new ArrayList<PlacematModel>();
+        var selectedStickyNotes = new ArrayList<StickyNoteModel>();
+        for (var element : selection) {
+            if (element instanceof WireModel) {
+                // ignored
+            } else if (element instanceof AbstractNodeModel n) {
+                selectedNodes.add(n);
+            } else if (element instanceof PlacematModel pm) {
+                selectedPlacemats.add(pm);
+            } else if (element instanceof StickyNoteModel sn) {
+                selectedStickyNotes.add(sn);
+            } else {
+                LDLib2.LOGGER.warn("Ignoring unsupported selection element type: {}",
+                        element.getClass().getName());
+            }
+        }
+
+        if (selectedNodes.isEmpty() && selectedPlacemats.isEmpty() && selectedStickyNotes.isEmpty()) {
+            LDLib2.LOGGER.warn("Cannot extract: selection contains no movable elements.");
+            return null;
+        }
+
+        // Copiability check on the non-wire elements
+        for (var n : selectedNodes) {
+            if (!n.isCopiable()) {
+                LDLib2.LOGGER.warn("Cannot extract: selection contains a non-copiable node {}.", n.getUid());
+                return null;
+            }
+        }
+
+        var selectedNodeUids = selectedNodes.stream()
+                .map(AbstractNodeModel::getUid)
+                .collect(Collectors.toSet());
+
+        // Placemats: every node currently inside must also be selected. We do a position-only
+        // check (matches the fallback in PlacematModel.getContainedNodes when size lookup absent)
+        // — selection-from-rectangle UI typically already selects the contained nodes.
+        for (var pm : selectedPlacemats) {
+            var contained = pm.getContainedNodes(null);
+            for (var n : contained) {
+                if (!selectedNodeUids.contains(n.getUid())) {
+                    LDLib2.LOGGER.warn(
+                            "Cannot extract: placemat {} contains a non-selected node {}; "
+                                    + "select the node or remove the placemat from the selection.",
+                            pm.getUid(), n.getUid());
+                    return null;
+                }
+            }
+        }
+
+        // Identify any LOCAL SubgraphNodeModels in the selection — their referenced local
+        // subgraph must be transplanted from this graph's localSubGraphs into the new subgraph's
+        // localSubGraphs so the pasted SubgraphNodeModel can resolve it (resolution is by uid).
+        var localSubsToTransplant = new ArrayList<GraphModel>();
+        for (var n : selectedNodes) {
+            if (n instanceof SubgraphNodeModel sub
+                    && sub.getKind() == SubgraphNodeModel.Kind.LOCAL) {
+                var target = sub.getSubgraphModel();
+                if (target != null && this.localSubGraphs != null
+                        && this.localSubGraphs.contains(target)) {
+                    localSubsToTransplant.add(target);
+                }
+            }
+        }
+
+        // Centroid for placement of the new outer SubgraphNodeModel — use only node positions
+        // for stability (placemats/sticky notes may be much larger).
+        var centroid = new Vector2f();
+        var centroidSrc = selectedNodes.isEmpty() ? (List<? extends IMovable>) selectedPlacemats : selectedNodes;
+        if (centroidSrc.isEmpty()) centroidSrc = selectedStickyNotes;
+        for (var m : centroidSrc) centroid.add(m.getPosition());
+        if (!centroidSrc.isEmpty()) centroid.div(centroidSrc.size());
+
+        // Crossing wires — only consider wires touching selected nodes (placemats/sticky notes
+        // have no ports). Wires explicitly in the selection are not relevant for boundary logic.
+        var crossing = new ArrayList<CrossingWire>();
+        for (var wire : wireModels) {
+            if (wire == null) continue;
+            var fromPort = wire.getFromPort();
+            var toPort = wire.getToPort();
+            if (fromPort == null || toPort == null) continue;
+            var fromNode = fromPort.getNodeModel();
+            var toNode = toPort.getNodeModel();
+            if (fromNode == null || toNode == null) continue;
+            boolean fromSel = selectedNodeUids.contains(fromNode.getUid());
+            boolean toSel = selectedNodeUids.contains(toNode.getUid());
+            if (fromSel == toSel) continue;
+            crossing.add(new CrossingWire(wire, fromSel));
+        }
+
+        // Build the list passed to copyElements: nodes + placemats + sticky notes
+        var elementsToCopy = new ArrayList<GraphElementModel>(selectedNodes.size()
+                + selectedPlacemats.size() + selectedStickyNotes.size());
+        elementsToCopy.addAll(selectedNodes);
+        elementsToCopy.addAll(selectedPlacemats);
+        elementsToCopy.addAll(selectedStickyNotes);
+
+        // New empty subgraph — created BEFORE copy so we can transplant local-subgraph references
+        // out of `this.localSubGraphs` ahead of time. With them gone, copyElements' local-subgraph
+        // deep-clone logic won't see them (getSubgraphModel returns null) and won't produce a
+        // redundant clone — paste leaves the pasted SubgraphNodeModel's localGraphId untouched
+        // and it resolves correctly inside newSub.
+        var sub = createLocalSubgraphInstance();
+        if (sub == null) {
+            LDLib2.LOGGER.warn("Graph type does not support inline subgraphs: {}", this.getClass().getName());
+            return null;
+        }
+        addLocalSubgraph(sub);
+
+        // Transplant any selected LOCAL subgraphs from this.localSubGraphs into sub.localSubGraphs.
+        for (var moved : localSubsToTransplant) {
+            this.localSubGraphs.remove(moved);
+            sub.addLocalSubgraph(moved);
+        }
+
+        // Snapshot the selection for copy AFTER transplant — selected SubgraphNodeModels no
+        // longer resolve their inner graph via outer, so copyElements skips them in its
+        // local-subgraph-clone pass (the transplanted graph travels via the parent-pointer
+        // reattachment instead).
+        var copyData = copyElements(elementsToCopy, provider);
+
+        // Variables inside the subgraph that mirror each crossing wire
+        var crossingVars = new HashMap<CrossingWire, VariableDeclarationModel>();
+        int inCounter = 0, outCounter = 0;
+        for (var c : crossing) {
+            ModifierFlags mod;
+            String varName;
+            TypeHandle type = c.fromSelected
+                    ? c.wire.getFromPort().getDataTypeHandle()
+                    : c.wire.getToPort().getDataTypeHandle();
+            if (c.fromSelected) {
+                mod = ModifierFlags.WRITE;
+                varName = "out" + (++outCounter);
+            } else {
+                mod = ModifierFlags.READ;
+                varName = "in" + (++inCounter);
+            }
+            var vdm = sub.createGraphVariableDeclaration(type, varName, mod,
+                    VariableScope.LOCAL, null, Integer.MAX_VALUE, null, null, null);
+            if (vdm != null) crossingVars.put(c, vdm);
+        }
+
+        // Paste copy into subgraph; offset positions so the cluster sits around (0,0) inside
+        var pasted = sub.pasteElementsWithMap(copyData, new Vector2f(-centroid.x, -centroid.y));
+        var oldToNew = pasted.oldToNewNodeMap();
+
+        // Wire each variable's VariableNodeModel to its pasted internal port
+        for (var c : crossing) {
+            var vdm = crossingVars.get(c);
+            if (vdm == null) continue;
+            var internalOldNode = c.fromSelected
+                    ? c.wire.getFromPort().getNodeModel()
+                    : c.wire.getToPort().getNodeModel();
+            var internalPortName = c.fromSelected
+                    ? c.wire.getFromPort().getUniqueName()
+                    : c.wire.getToPort().getUniqueName();
+            var pastedNode = oldToNew.get(internalOldNode.getUid());
+            if (pastedNode == null) continue;
+            var pastedPort = findPortByUniqueName(pastedNode, internalPortName);
+            if (pastedPort == null) continue;
+
+            float dx = c.fromSelected ? 80f : -80f;
+            var pos = new Vector2f(pastedNode.getPosition().x + dx, pastedNode.getPosition().y);
+            var varNode = sub.createVariableNode(vdm, pos, null, null);
+            PortModel varPort = c.fromSelected ? varNode.getInputPort() : varNode.getOutputPort();
+            if (varPort == null) continue;
+            if (c.fromSelected) {
+                sub.createWire(varPort, pastedPort);
+            } else {
+                sub.createWire(pastedPort, varPort);
+            }
+        }
+
+        // Outer SubgraphNodeModel — defineNode (via onCreateNode) builds ports from the variables
+        var subNode = createNodeWithType(
+                SubgraphNodeModel.class, "Subgraph", new Vector2f(centroid),
+                null, n -> n.setLocalSubgraph(sub), SpawnFlags.DEFAULT);
+
+        // Outer wires from external ports → the auto-generated SubgraphNodeModel ports
+        for (var c : crossing) {
+            var vdm = crossingVars.get(c);
+            if (vdm == null) continue;
+            var portId = vdm.getUid().toString();
+            PortModel subNodePort = c.fromSelected
+                    ? subNode.getOutputsById().get(portId)
+                    : subNode.getInputsById().get(portId);
+            if (subNodePort == null) continue;
+            var externalPort = c.fromSelected ? c.wire.getToPort() : c.wire.getFromPort();
+            if (externalPort == null) continue;
+            if (c.fromSelected) {
+                createWire(externalPort, subNodePort);
+            } else {
+                createWire(subNodePort, externalPort);
+            }
+        }
+
+        // Remove the originals from the outer graph. deleteNodes cascades wires.
+        deleteNodes(selectedNodes, true, true);
+        if (!selectedPlacemats.isEmpty()) deletePlacemats(selectedPlacemats);
+        if (!selectedStickyNotes.isEmpty()) deleteStickyNotes(selectedStickyNotes);
+
+        return subNode;
+    }
+
+    // endregion
+
     // region subgraph
+
+    /**
+     * Recursively propagates the editor reference resolver to all nested local subgraphs so
+     * external subgraph nodes nested inside locals can still resolve their inner graphs.
+     */
+    public void setReferenceResolver(@Nullable IGraphReferenceResolver resolver) {
+        this.referenceResolver = resolver;
+        if (localSubGraphs != null) {
+            for (var sub : localSubGraphs) {
+                if (sub != null) sub.setReferenceResolver(resolver);
+            }
+        }
+    }
+
+    /**
+     * Adds a freshly-created local subgraph to this graph and wires its parent pointer.
+     */
+    public void addLocalSubgraph(GraphModel subgraphModel) {
+        if (localSubGraphs == null) localSubGraphs = new ArrayList<>();
+        if (!localSubGraphs.contains(subgraphModel)) {
+            localSubGraphs.add(subgraphModel);
+        }
+        subgraphModel.parentGraph = this;
+        subgraphModel.setReferenceResolver(this.referenceResolver);
+    }
 
     public void removeLocalSubgraph(GraphModel subgraphModel) {
         if (localSubGraphs != null) {
             localSubGraphs.remove(subgraphModel);
-            // todo subgraph
+            if (subgraphModel != null && subgraphModel.parentGraph == this) {
+                subgraphModel.parentGraph = null;
+            }
         }
+    }
+
+    /**
+     * Looks up a local subgraph by its uid. Local subgraphs are identified by the GraphModel's own uid.
+     */
+    @Nullable
+    public GraphModel findLocalSubgraphByUid(UUID uid) {
+        if (localSubGraphs == null || uid == null) return null;
+        for (var sub : localSubGraphs) {
+            if (sub != null && uid.equals(sub.getUid())) return sub;
+        }
+        return null;
+    }
+
+    /**
+     * Factory for a new empty same-typed local subgraph. The abstract base cannot instantiate
+     * itself; concrete subclasses (e.g. {@link CustomGraphModelImpl}) override this. Returns null
+     * if the concrete type can't be instantiated — the caller must handle.
+     */
+    @Nullable
+    public GraphModel createLocalSubgraphInstance() {
+        return null;
+    }
+
+    /**
+     * Factory for a new empty local subgraph of a (possibly different) graph type. When
+     * {@code graphType} is {@code null} or equal to this graph's own type, behaves like
+     * {@link #createLocalSubgraphInstance()}. Cross-type instances are gated by
+     * {@link com.lowdragmc.lowdraglib2.nodegraphtookit.api.graph.Graph#acceptsSubgraphGraph}.
+     * Returns {@code null} if the type can't be instantiated or isn't accepted.
+     */
+    @Nullable
+    public GraphModel createLocalSubgraphInstance(@Nullable Class<? extends Graph> graphType) {
+        return createLocalSubgraphInstance();
     }
 
     /**
      * If this GraphModel is a subgraph, any subgraph nodes that reference it in the parent graph must redefine its ports whenever an input or output variable declaration is added.
      */
-    protected void redefineSubgraphNodeModels() {
-        // todo subgraph
+    public void redefineSubgraphNodeModels() {
+        if (parentGraph == null) return;
+        for (var node : parentGraph.nodeModels) {
+            if (node instanceof SubgraphNodeModel sub && sub.getSubgraphModel() == this) {
+                sub.defineNode();
+                parentGraph.getCurrentGraphChangeDescription()
+                        .addChangedModel(sub, ChangeHint.GRAPH_TOPOLOGY);
+            }
+        }
+    }
+
+    /**
+     * Redefines all subgraph nodes in any open graph that reference the given external resource path.
+     * Called when an external asset graph is saved.
+     */
+    public void redefineSubgraphNodeModelsByPath(IResourcePath path) {
+        if (path == null) return;
+        for (var node : nodeModels) {
+            if (node instanceof SubgraphNodeModel sub
+                    && sub.getKind() == SubgraphNodeModel.Kind.EXTERNAL
+                    && path.equals(sub.getExternalPath())) {
+                sub.invalidateResolvedSubgraph();
+                sub.defineNode();
+                getCurrentGraphChangeDescription().addChangedModel(sub, ChangeHint.GRAPH_TOPOLOGY);
+            }
+        }
+        if (localSubGraphs != null) {
+            for (var sub : localSubGraphs) {
+                if (sub != null) sub.redefineSubgraphNodeModelsByPath(path);
+            }
+        }
     }
 
     /**
      * Calls update recursively on all subgraph nodes in the graph.
      */
     public void updateSubGraphs() {
-        // todo subgraph
+        for (var node : nodeModels) {
+            if (node instanceof SubgraphNodeModel sub) {
+                sub.defineNode();
+            }
+        }
+        if (localSubGraphs != null) {
+            for (var sub : localSubGraphs) {
+                if (sub != null) sub.updateSubGraphs();
+            }
+        }
     }
 
 
@@ -1763,6 +2553,9 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
      * Gets a type discriminator string for the given node model.
      */
     protected String getNodeDiscriminator(AbstractNodeModel node) {
+        // Order matters: CustomContextNodeModelImpl is a NodeModel and also an ICustomNodeModel —
+        // check the context branch before the generic custom branch.
+        if (node instanceof ContextNodeModel) return "context";
         if (node instanceof CustomNodeModelImpl) return "custom";
         if (node instanceof VariableNodeModelImpl) return "variable";
         if (node instanceof ConstantNodeModelImpl) return "constant";
@@ -1778,6 +2571,7 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
     protected AbstractNodeModel createNodeFromDiscriminator(String type) {
         return switch (type) {
             case "custom" -> new CustomNodeModelImpl();
+            case "context" -> new CustomContextNodeModelImpl();
             case "variable" -> new VariableNodeModelImpl();
             case "constant" -> new ConstantNodeModelImpl();
             case "subgraph" -> new SubgraphNodeModel();
@@ -1880,14 +2674,17 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
             if (nodeModel == null) continue;
             var nodeTag = nodeModel.serializeNBT(provider);
             nodeTag.putString("_type", getNodeDiscriminator(nodeModel));
-            if (nodeModel instanceof CustomNodeModelImpl customNode && customNode.getNode() != null) {
+            if (nodeModel instanceof ICustomNodeModel customNode && customNode.getNode() != null) {
                 nodeTag.putString("nodeClass", customNode.getNode().getClass().getName());
             }
             nodesTag.add(nodeTag);
         }
         tag.put("nodes", nodesTag);
 
-        // 5. Wires
+        // 5. Reroute points — before the wires, which reference them by uid.
+        tag.put("reroutePoints", writeReroutePoints(wireReroutePointModels));
+
+        // 6. Wires
         var wiresTag = new ListTag();
         for (var wireModel : wireModels) {
             if (wireModel != null) {
@@ -1914,6 +2711,24 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
         }
         tag.put("stickyNotes", stickyNotesTag);
 
+        // 8. Local Subgraphs — each entry is a full nested GraphModel NBT, tagged with the concrete
+        // graph type so cross-type local subgraphs can be rebuilt on load (absent ⇒ same type as
+        // the owner, for backward compatibility with pre-cross-type saves).
+        if (localSubGraphs != null && !localSubGraphs.isEmpty()) {
+            var localSubGraphsTag = new ListTag();
+            for (var sub : localSubGraphs) {
+                if (sub == null) continue;
+                var subTag = sub.serializeNBT(provider);
+                if (sub instanceof CustomGraphModelImpl custom) {
+                    subTag.putString("graphClass", custom.getGraph().getClass().getName());
+                }
+                localSubGraphsTag.add(subTag);
+            }
+            if (!localSubGraphsTag.isEmpty()) {
+                tag.put("localSubGraphs", localSubGraphsTag);
+            }
+        }
+
         return tag;
     }
 
@@ -1923,7 +2738,9 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
 
         // Clear existing state
         nodeModels.clear();
+        onNodeModelsReset();
         wireModels.clear();
+        wireReroutePointModels.clear();
         placematModels.clear();
         stickyNoteModels.clear();
         graphVariableModels.clear();
@@ -1932,6 +2749,7 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
         elementsByUID = null;
         portWireIndex = null;
         existingVariableNames.clear();
+        if (localSubGraphs != null) localSubGraphs.clear();
 
         // 1. Variables
         if (compound.contains("variables")) {
@@ -1941,6 +2759,7 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
                 var variable = new VariableDeclarationModel();
                 variable.setGraphModel(this);
                 variable.deserializeNBT(provider, varTag);
+                variable.setModifiers(variable.getModifiers());
                 graphVariableModels.add(variable);
                 existingVariableNames.add(variable.getName());
                 registerElement(variable);
@@ -1977,6 +2796,40 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
             }
         }
 
+        // 3.5 Local Subgraphs — must load before nodes so SubgraphNodeModel.defineNode() can resolve them
+        if (compound.contains("localSubGraphs")) {
+            var listTag = compound.getList("localSubGraphs", Tag.TAG_COMPOUND);
+            for (int i = 0; i < listTag.size(); i++) {
+                var subTag = listTag.getCompound(i);
+                // graphClass absent ⇒ legacy save ⇒ same type as owner (createLocalSubgraphInstance).
+                GraphModel subModel;
+                if (subTag.contains("graphClass")) {
+                    var graphClassName = subTag.getString("graphClass");
+                    Class<? extends Graph> graphType = null;
+                    try {
+                        var cls = Class.forName(graphClassName);
+                        if (Graph.class.isAssignableFrom(cls)) {
+                            graphType = cls.asSubclass(Graph.class);
+                        } else {
+                            LDLib2.LOGGER.error("Local subgraph graphClass {} is not a Graph subclass", graphClassName);
+                        }
+                    } catch (ClassNotFoundException e) {
+                        LDLib2.LOGGER.error("Unknown local subgraph graphClass {} — skipping nested graph", graphClassName);
+                    }
+                    subModel = createLocalSubgraphInstance(graphType);
+                } else {
+                    subModel = createLocalSubgraphInstance();
+                }
+                if (subModel == null) {
+                    LDLib2.LOGGER.error("Cannot instantiate local subgraph for type {} — skipping nested graph",
+                            this.getClass().getName());
+                    continue;
+                }
+                subModel.deserializeNBT(provider, subTag);
+                addLocalSubgraph(subModel);
+            }
+        }
+
         // 4. Nodes
         if (compound.contains("nodes")) {
             var nodesTag = compound.getList("nodes", Tag.TAG_COMPOUND);
@@ -1988,8 +2841,10 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
                     nodeModel.setGraphModel(this);
                     nodeModel.deserializeNBT(provider, nodeTag);
 
-                    // CustomNodeModelImpl: look up node class and init
-                    if (nodeModel instanceof CustomNodeModelImpl customNode) {
+                    // ICustomNodeModel: look up node class and init (covers CustomNodeModelImpl
+                    // and ContextNodeModel — blocks inside a context are restored by the
+                    // context itself during its own deserialize).
+                    if (nodeModel instanceof ICustomNodeModel customNode) {
                         var nodeClassName = nodeTag.getString("nodeClass");
                         Node node = findNodeByClassName(nodeClassName);
                         if (node != null) {
@@ -2014,6 +2869,10 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
                         nm.defineNode();
                     }
 
+                    // The fresh-spawn lifecycle hook that creates the preview model doesn't run on
+                    // load, so reconcile it now that the node (and its hasNodePreview) is restored.
+                    nodeModel.syncNodePreview();
+
                     nodeModels.add(nodeModel);
                     registerElement(nodeModel);
                 } catch (Exception e) {
@@ -2022,7 +2881,12 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
             }
         }
 
-        // 5. Wires - resolve port references
+        // 5. Reroute points — pure layout, referenced by uid from the wires loaded next.
+        if (compound.contains("reroutePoints")) {
+            readReroutePoints(compound.getList("reroutePoints", Tag.TAG_COMPOUND), false, null);
+        }
+
+        // 6. Wires - resolve port references
         if (compound.contains("wires")) {
             var wiresTag = compound.getList("wires", Tag.TAG_COMPOUND);
             for (int i = 0; i < wiresTag.size(); i++) {
@@ -2039,6 +2903,43 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
                     PortModel fromPort = fromPortUid != null && getModel(fromPortUid) instanceof PortModel p ? p : null;
                     PortModel toPort = toPortUid != null && getModel(toPortUid) instanceof PortModel p ? p : null;
 
+                    // Recovery: a port uid drifts when the port's TYPE changed (uid hashes the type)
+                    // or the port temporarily doesn't exist (its source graph is broken/unavailable).
+                    // Re-bind by (node uid, port id) — to the real port when present, else keep the
+                    // wire alive on a missing-port placeholder that a later defineNode retypes back.
+                    boolean fromRecovered = false;
+                    boolean toRecovered = false;
+                    if (fromPort == null) {
+                        fromPort = resolveWireEndpointFallback(wireTag, false);
+                        fromRecovered = fromPort != null;
+                    }
+                    if (toPort == null) {
+                        toPort = resolveWireEndpointFallback(wireTag, true);
+                        toRecovered = toPort != null;
+                    }
+
+                    // A recovered endpoint was RETYPED. Compatible per the graph's own rule → the
+                    // re-bind stands (matches in-session getReusablePort behavior). Incompatible →
+                    // the wire is neither deleted nor left as an illegal connection: the recovered
+                    // side parks on a TYPE-CONFLICT placeholder ("the port matching this wire's
+                    // type is missing") for the user to resolve; it migrates back automatically if
+                    // a compatible type returns.
+                    if ((fromRecovered || toRecovered) && fromPort != null && toPort != null
+                            && !fromPort.getPortType().equals(PortType.MISSING_PORT)
+                            && !toPort.getPortType().equals(PortType.MISSING_PORT)
+                            && !canAssignTo(toPort, fromPort)) {
+                        LDLib2.LOGGER.warn("Wire {} re-bound by port id but the retyped ports are no longer compatible ({} -> {}) — parking on a type-conflict placeholder.",
+                                wireModel.getUid(), fromPort.getDataTypeHandle(), toPort.getDataTypeHandle());
+                        if (fromRecovered && fromPort.getNodeModel() instanceof NodeModel fromNode) {
+                            fromPort = fromNode.getOrCreateTypeConflictPlaceholder(
+                                    PortDirection.OUTPUT, fromPort.getPortId());
+                        }
+                        if (toRecovered && toPort.getNodeModel() instanceof NodeModel toNode) {
+                            toPort = toNode.getOrCreateTypeConflictPlaceholder(
+                                    PortDirection.INPUT, toPort.getPortId());
+                        }
+                    }
+
                     if (fromPort == null || toPort == null) {
                         LDLib2.LOGGER.warn("Skipping wire {} with unresolvable ports (from={}, to={})",
                                 wireModel.getUid(), fromPortUid, toPortUid);
@@ -2053,6 +2954,12 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
                         continue;
                     }
                     wireModel.setPorts(toPort, fromPort);
+
+                    // Layout only — an unresolvable point just means the wire draws straight.
+                    var routeViaUid = WireModel.getRouteViaUidFromTag(wireTag);
+                    if (routeViaUid != null && getModel(routeViaUid) instanceof WireReroutePointModel point) {
+                        wireModel.setRouteVia(point);
+                    }
 
                     wireModels.add(wireModel);
                     registerElement(wireModel);
@@ -2090,13 +2997,98 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
                 registerElement(stickyNote);
             }
         }
+
+        // 8. Failed-constant sweep — for each input constant whose decode failed (codec
+        // mismatch, missing codec/accessor, corrupt NBT...), drop wires terminating at that
+        // port. The saved snapshot's behaviour relied on a value we couldn't reproduce, so
+        // leaving the wire connected would let an upstream node feed a value that doesn't
+        // match the saved state, silently corrupting downstream computation. Surface the
+        // event by dropping the wire so the user can investigate.
+        //
+        // Output-side wires are left alone — output ports have no constant, so a decode
+        // failure isn't a meaningful event for them. Type-mismatch port-drops are already
+        // handled by step 5 above (the wire's referenced port UID no longer resolves).
+        dropWiresOnFailedInputConstants();
+
+        // A reroute point only exists to shape the wires through it. Step 6 can skip a wire whose
+        // ports never resolved and step 8 can drop one outright, in both cases leaving the points
+        // it used behind with nothing to shape.
+        sweepOrphanReroutePoints();
+
+        // 9. Orphan missing-port sweep. A MISSING_PORT placeholder exists ONLY to keep a wire
+        // alive (recovery fallback / type-conflict parking) — a missing port with no connected
+        // wire is meaningless. This happens when a wire's recovery creates a placeholder on one
+        // endpoint but the wire is then skipped because the OTHER endpoint stayed unresolvable
+        // (step 5), or a step-8 drop removed the last wire. Enforce the invariant: no wire ⇒ no
+        // missing port.
+        removeOrphanMissingPorts();
+    }
+
+    /** Drop every MISSING_PORT placeholder that no longer carries a wire (see step 9). */
+    private void removeOrphanMissingPorts() {
+        forEachMissingPort((nm, port) -> {
+            if (port.getConnectedWires().isEmpty()) nm.removeUnusedMissingPort(port);
+        });
+    }
+
+    protected void onNodeModelsReset() {
     }
 
     /**
-     * Finds a Node instance by its class name from the supported nodes list.
+     * Load-time wire recovery for one endpoint whose port UID didn't resolve: re-bind by the
+     * wire's (node uid, port id) recovery keys. A real port with that id wins (covers uid drift
+     * from port retyping); otherwise a MISSING_PORT placeholder keeps the wire alive — when the
+     * port's source becomes resolvable again, {@code NodeModel.getReusablePort} retypes the
+     * placeholder in place and the wire is fully restored. Returns null when the recovery keys
+     * are absent (older saves) or the node itself is gone (the wire is then legitimately dead).
      */
     @Nullable
-    protected Node findNodeByClassName(String className) {
+    private PortModel resolveWireEndpointFallback(CompoundTag wireTag, boolean toSide) {
+        var nodeUid = WireModel.getNodeUidFromTag(wireTag, toSide);
+        var portId = WireModel.getPortIdFromTag(wireTag, toSide);
+        if (nodeUid == null || portId == null || portId.isEmpty()) return null;
+        if (!(getModel(nodeUid) instanceof NodeModel nodeModel)) return null;
+        var existing = toSide ? nodeModel.getInputsById().get(portId)
+                : nodeModel.getOutputsById().get(portId);
+        if (existing != null) return existing;
+        LDLib2.LOGGER.warn("Wire endpoint '{}' on node {} is unavailable — keeping the wire on a missing-port placeholder.",
+                portId, nodeModel.getClass().getSimpleName());
+        return nodeModel.addMissingPort(toSide ? PortDirection.INPUT : PortDirection.OUTPUT, portId, null);
+    }
+
+    private void dropWiresOnFailedInputConstants() {
+        for (var nodeModel : nodeModels) {
+            // removeNode leaves null slots in the list (stable-index pattern); skip them.
+            if (nodeModel == null) continue;
+            if (!(nodeModel instanceof NodeModel nm)) continue;
+            for (var entry : nm.getInputConstantsById().entrySet()) {
+                var constant = entry.getValue();
+                if (constant == null || !constant.isDeserializeFailed()) continue;
+                var portUniqueName = entry.getKey();
+                var inputPort = nm.getInputsById().get(portUniqueName);
+                if (inputPort == null) continue;
+                var connectedWires = new ArrayList<>(inputPort.getConnectedWires());
+                if (connectedWires.isEmpty()) {
+                    LDLib2.LOGGER.error("Constant for port '{}' on node {} failed to deserialize — no wires connected, value will fall back to default.",
+                            portUniqueName, nodeModel.getClass().getSimpleName());
+                    continue;
+                }
+                LDLib2.LOGGER.error("Constant for port '{}' on node {} failed to deserialize — dropping {} wire(s) terminating at this port to surface the data-loss event.",
+                        portUniqueName, nodeModel.getClass().getSimpleName(), connectedWires.size());
+                for (var wire : connectedWires) {
+                    removeWire(wire);
+                }
+            }
+        }
+    }
+
+    /**
+     * Finds a Node instance by its class name from the supported nodes list. Public so that
+     * nested-element models (e.g. {@code ContextNodeModel}) can resolve user-node classes
+     * during their own deserialization.
+     */
+    @Nullable
+    public Node findNodeByClassName(String className) {
         if (className == null || className.isEmpty()) return null;
         for (var nodeClass : getSupportNodes()) {
             if (nodeClass.getName().equals(className)) {
@@ -2144,16 +3136,32 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
      * Only nodes are copied; wires whose both endpoints belong to the selected set are included automatically.
      */
     public CopyPasteData copyElements(List<? extends GraphElementModel> elements, HolderLookup.Provider provider) {
-        // 1. Filter to AbstractNodeModel
+        // 1. Filter to AbstractNodeModel. Block nodes are excluded — they can't be pasted as
+        // top-level nodes (they need a parent context), and a block's data already travels with
+        // its parent context via ContextNodeModel.serializeAdditionalNBT, so copying the context
+        // is the supported path. TODO: standalone block copy that pastes into a selected context.
         var selectedNodes = elements.stream()
                 .filter(e -> e instanceof AbstractNodeModel)
                 .map(e -> (AbstractNodeModel) e)
+                .filter(n -> !(n instanceof com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.BlockNodeModel))
                 .toList();
         var selectedNodeUids = selectedNodes.stream()
                 .map(GraphElementModel::getUid)
                 .collect(Collectors.toSet());
 
-        // 2. Collect internal wires (both ports belong to selected nodes)
+        // Wires touching a block belong to the block's node, not the context. Cover block UIDs of
+        // any selected context so a wire between two blocks inside the same selected context (or
+        // between a selected top-level node and a block of a selected context) survives the copy.
+        var coveredNodeUids = new HashSet<>(selectedNodeUids);
+        for (var node : selectedNodes) {
+            if (node instanceof com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.ContextNodeModel ctx) {
+                for (var block : ctx.getBlocks()) {
+                    if (block != null) coveredNodeUids.add(block.getUid());
+                }
+            }
+        }
+
+        // 2. Collect internal wires (both ports belong to selected nodes or their blocks)
         var internalWires = new ArrayList<WireModel>();
         for (var wire : wireModels) {
             if (wire == null) continue;
@@ -2161,8 +3169,8 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
             var toPort = wire.getToPort();
             if (fromPort == null || toPort == null) continue;
             if (fromPort.getNodeModel() == null || toPort.getNodeModel() == null) continue;
-            if (selectedNodeUids.contains(fromPort.getNodeModel().getUid())
-                    && selectedNodeUids.contains(toPort.getNodeModel().getUid())) {
+            if (coveredNodeUids.contains(fromPort.getNodeModel().getUid())
+                    && coveredNodeUids.contains(toPort.getNodeModel().getUid())) {
                 internalWires.add(wire);
             }
         }
@@ -2174,7 +3182,7 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
         for (var node : selectedNodes) {
             var nodeTag = node.serializeNBT(provider);
             nodeTag.putString("_type", getNodeDiscriminator(node));
-            if (node instanceof CustomNodeModelImpl customNode && customNode.getNode() != null) {
+            if (node instanceof ICustomNodeModel customNode && customNode.getNode() != null) {
                 nodeTag.putString("nodeClass", customNode.getNode().getClass().getName());
             }
             nodesTag.add(nodeTag);
@@ -2189,9 +3197,20 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
             wireRef.putString("fromPortUniqueName", wire.getFromPort().getUniqueName());
             wireRef.putUUID("toNodeUid", wire.getToPort().getNodeModel().getUid());
             wireRef.putString("toPortUniqueName", wire.getToPort().getUniqueName());
+            if (wire.getRouteVia() != null) {
+                wireRef.putUUID("routeVia", wire.getRouteVia().getUid());
+            }
             wiresTag.add(wireRef);
         }
         tag.put("wires", wiresTag);
+
+        // Reroute points reachable from the copied wires. Shared points are stored once, so a
+        // pasted fan-out keeps sharing its trunk instead of splitting into parallel copies.
+        var copiedPoints = new LinkedHashSet<WireReroutePointModel>();
+        for (var wire : internalWires) {
+            copiedPoints.addAll(wire.getReroutePoints());
+        }
+        tag.put("reroutePoints", writeReroutePoints(copiedPoints));
 
         // 5. Serialize variable declarations referenced by VariableNodeModels
         var variablesTag = new ListTag();
@@ -2237,6 +3256,30 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
         }
         tag.put("stickyNotes", stickyNotesTag);
 
+        // 9. Serialize local subgraphs referenced by any selected LOCAL SubgraphNodeModel.
+        // Without this, pasting a LOCAL subgraph node either silently shares the original inner
+        // graph (in-graph paste — mutating one node's subgraph corrupts the other) or dangles
+        // (cross-graph paste — the destination has no matching localSubGraphs entry).
+        // We carry the full nested GraphModel NBT keyed by the original subgraph uid; paste maps
+        // each to a freshly-uid'd clone and rebinds the pasted SubgraphNodeModel to it.
+        var localSubgraphsTag = new ListTag();
+        var seenSubUids = new HashSet<UUID>();
+        for (var node : selectedNodes) {
+            if (node instanceof SubgraphNodeModel sub
+                    && sub.getKind() == SubgraphNodeModel.Kind.LOCAL) {
+                var inner = sub.getSubgraphModel();
+                if (inner == null) continue;
+                if (!seenSubUids.add(inner.getUid())) continue;
+                var entry = new CompoundTag();
+                entry.putUUID("oldUid", inner.getUid());
+                entry.put("graph", inner.serializeNBT(provider));
+                localSubgraphsTag.add(entry);
+            }
+        }
+        if (!localSubgraphsTag.isEmpty()) {
+            tag.put("localSubgraphs", localSubgraphsTag);
+        }
+
         return new CopyPasteData(tag, provider);
     }
 
@@ -2245,9 +3288,44 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
      * Returns all newly created GraphElementModels (nodes).
      */
     public List<GraphElementModel> pasteElements(CopyPasteData data, Vector2f positionOffset) {
+        return pasteElementsWithMap(data, positionOffset).elements();
+    }
+
+    /**
+     * Same as {@link #pasteElements} but additionally returns the {@code oldNodeUid → newNodeModel}
+     * mapping. Useful when callers need to reattach external state (e.g. wires from outside the
+     * selection) to the pasted nodes — see the "extract selection to subgraph" command.
+     */
+    public record PasteResult(List<GraphElementModel> elements,
+                              Map<UUID, AbstractNodeModel> oldToNewNodeMap) {}
+
+    public PasteResult pasteElementsWithMap(CopyPasteData data, Vector2f positionOffset) {
         var compound = data.tag();
         var provider = data.provider();
         var result = new ArrayList<GraphElementModel>();
+        var oldToNewNodeMapOuter = new HashMap<UUID, AbstractNodeModel>();
+        // oldSubGraphUid → freshly-cloned inner GraphModel (added to this.localSubGraphs).
+        // Built BEFORE node deserialize so SubgraphNodeModel can rebind during paste.
+        var oldToNewSubgraphUid = new HashMap<UUID, UUID>();
+        if (compound.contains("localSubgraphs")) {
+            var listTag = compound.getList("localSubgraphs", Tag.TAG_COMPOUND);
+            for (int i = 0; i < listTag.size(); i++) {
+                var entry = listTag.getCompound(i);
+                if (!entry.contains("oldUid") || !entry.contains("graph")) continue;
+                var oldUid = entry.getUUID("oldUid");
+                var clone = createLocalSubgraphInstance();
+                if (clone == null) {
+                    LDLib2.LOGGER.warn("Cannot instantiate local subgraph for paste; clone skipped");
+                    continue;
+                }
+                clone.deserializeNBT(provider, entry.getCompound("graph"));
+                // Fresh uid for the clone — uid travels via the SubgraphNodeModel.localGraphId
+                // map; nothing in the inner graph references its own outer uid.
+                clone.setUid(UUID.randomUUID());
+                addLocalSubgraph(clone);
+                oldToNewSubgraphUid.put(oldUid, clone.getUid());
+            }
+        }
 
         // 1. Variable declarations: deserialize, reuse existing by UID or register new
         if (compound.contains("variables")) {
@@ -2257,6 +3335,7 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
                 var variable = new VariableDeclarationModel();
                 variable.setGraphModel(this);
                 variable.deserializeNBT(provider, varTag);
+                variable.setModifiers(variable.getModifiers());
                 if (!hasModel(variable.getUid())) {
                     addVariableDeclaration(variable);
                 }
@@ -2278,7 +3357,7 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
         }
 
         // 3. Nodes: recreate with new UUIDs
-        var oldToNewNodeMap = new HashMap<UUID, AbstractNodeModel>();
+        var oldToNewNodeMap = oldToNewNodeMapOuter;
         if (compound.contains("nodes")) {
             var nodesTag = compound.getList("nodes", Tag.TAG_COMPOUND);
             for (int i = 0; i < nodesTag.size(); i++) {
@@ -2294,8 +3373,23 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
                     // Assign new UUID
                     nodeModel.setUid(UUID.randomUUID());
 
-                    // CustomNodeModelImpl: init node class
-                    if (nodeModel instanceof CustomNodeModelImpl customNode) {
+                    // ContextNodeModel: also re-uid nested blocks BEFORE defineNode rebuilds
+                    // ports. Blocks were just restored with their source-graph UIDs; defining
+                    // ports against those would compute colliding port UIDs (same-graph paste)
+                    // and prevent wires from resolving against the pasted copy instead of the
+                    // original. Recording the old→new block UID mapping also lets the wire
+                    // reconnect step find ports on the new block.
+                    if (nodeModel instanceof ContextNodeModel ctx) {
+                        for (var block : ctx.getBlocks()) {
+                            if (block == null) continue;
+                            var oldBlockUid = block.getUid();
+                            block.setUid(UUID.randomUUID());
+                            oldToNewNodeMap.put(oldBlockUid, block);
+                        }
+                    }
+
+                    // ICustomNodeModel: init node class (covers CustomNodeModelImpl + ContextNodeModel)
+                    if (nodeModel instanceof ICustomNodeModel customNode) {
                         var nodeClassName = nodeTag.getString("nodeClass");
                         Node node = findNodeByClassName(nodeClassName);
                         if (node != null) {
@@ -2313,10 +3407,26 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
                         resolveWirePortalDeclaration(portalNode);
                     }
 
+                    // SubgraphNodeModel LOCAL: rebind to the cloned inner graph (if we cloned one
+                    // for this oldUid above). EXTERNAL needs nothing — path-string is shared.
+                    if (nodeModel instanceof SubgraphNodeModel subNode
+                            && subNode.getKind() == SubgraphNodeModel.Kind.LOCAL
+                            && subNode.getLocalGraphId() != null) {
+                        var newSubUid = oldToNewSubgraphUid.get(subNode.getLocalGraphId());
+                        if (newSubUid != null) {
+                            subNode.rebindLocalGraphId(newSubUid);
+                        }
+                    }
+
                     // defineNode → reconstructs ports with deterministic UUIDs based on new node UUID
                     if (nodeModel instanceof NodeModel nm) {
                         nm.defineNode();
                     }
+
+                    // Paste rebuilds the node via createNodeFromDiscriminator (node == null), so the
+                    // fresh-spawn lifecycle hook that creates the preview model never runs — reconcile
+                    // it now that the node (and its hasNodePreview) is restored, mirroring the load path.
+                    nodeModel.syncNodePreview();
 
                     // Offset position
                     var pos = nodeModel.getPosition();
@@ -2331,6 +3441,12 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
                 }
             }
         }
+
+        // 3.5 Reroute points: fresh uids and shifted, before the wires that reference them. Points
+        // shared by several copied wires are restored once, so the pasted fan-out stays a fan-out.
+        var pastedReroutePoints = compound.contains("reroutePoints")
+                ? readReroutePoints(compound.getList("reroutePoints", Tag.TAG_COMPOUND), true, positionOffset)
+                : Map.<UUID, WireReroutePointModel>of();
 
         // 4. Wires: reconnect using oldNodeUid→newNode mapping + portUniqueName
         if (compound.contains("wires")) {
@@ -2349,7 +3465,10 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
                 var fromPort = findPortByUniqueName(newFromNode, fromPortName);
                 var toPort = findPortByUniqueName(newToNode, toPortName);
                 if (fromPort != null && toPort != null) {
-                    createWire(toPort, fromPort);
+                    var wire = createWire(toPort, fromPort);
+                    if (wire != null && wireRef.hasUUID("routeVia")) {
+                        wire.setRouteVia(pastedReroutePoints.get(wireRef.getUUID("routeVia")));
+                    }
                 }
             }
         }
@@ -2390,14 +3509,18 @@ public abstract class GraphModel extends GraphElementModel implements IGraphElem
             }
         }
 
-        return result;
+        // A wire whose ports could not be re-resolved is skipped above, which can leave the points
+        // it would have used with nothing to shape.
+        sweepOrphanReroutePoints();
+
+        return new PasteResult(result, oldToNewNodeMapOuter);
     }
 
     /**
      * Finds a port on a node by its unique name, searching through all ports and sub-ports.
      */
     @Nullable
-    private static PortModel findPortByUniqueName(AbstractNodeModel node, String uniqueName) {
+    public static PortModel findPortByUniqueName(AbstractNodeModel node, String uniqueName) {
         if (!(node instanceof PortNodeModel portNode)) return null;
         for (var port : portNode.getPorts()) {
             if (port.getUniqueName().equals(uniqueName)) return port;

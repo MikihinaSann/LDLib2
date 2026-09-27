@@ -8,7 +8,10 @@ import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
 import com.lowdragmc.lowdraglib2.gui.ui.rendering.GUIContext;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Vector2f;
+import org.joml.Vector4f;
 
+import java.util.EnumSet;
+import java.util.Set;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -64,9 +67,18 @@ public class WindowDragHelper {
                                        @Nullable Predicate<UIEvent> resizePredicate,
                                        @Nullable BiPredicate<UIEvent, DragResize> dragResizePredicate,
                                        @Nullable Consumer<UIEvent> onFinish) {
+        setBorderResize(element, target, border, minSize, maxSize, EnumSet.allOf(ResizeHandle.class),
+                resizePredicate, dragResizePredicate, onFinish);
+    }
+
+    public static void setBorderResize(UIElement element, UIElement target, float border, Vector2f minSize, Vector2f maxSize,
+                                       Set<ResizeHandle> allowedHandles,
+                                       @Nullable Predicate<UIEvent> resizePredicate,
+                                       @Nullable BiPredicate<UIEvent, DragResize> dragResizePredicate,
+                                       @Nullable Consumer<UIEvent> onFinish) {
         element.addEventListener(UIEvents.MOUSE_DOWN, e -> {
             if (resizePredicate != null && !resizePredicate.test(e)) return;
-            var handle = detectResizeHandle(element, e.x, e.y, border);
+            var handle = detectResizeHandle(element, e.x, e.y, border, allowedHandles);
             if (handle != null) {
                 var icon = handle.icon;
                 var width = handle.icon.spriteSize.width;
@@ -80,91 +92,102 @@ public class WindowDragHelper {
         });
 
         element.addEventListener(UIEvents.DRAG_SOURCE_UPDATE, e -> {
-            if (!(e.dragHandler.draggingObject instanceof DragResize(
-                    float startX, float startY, float startW, float startH, ResizeHandle handle
-            ))) return;
+            if (!(e.dragHandler.draggingObject instanceof DragResize dragResize)) return;
 
-            if (dragResizePredicate != null && !dragResizePredicate.test(e, (DragResize) e.dragHandler.draggingObject)) return;
+            if (dragResizePredicate != null && !dragResizePredicate.test(e, dragResize)) return;
             var d = element.getLocalMouseNormal(e.x - e.dragStartX, e.y - e.dragStartY);
-            float dx = d.x;
-            float dy = d.y;
-            float x = startX;
-            float y = startY;
-            float w = startW;
-            float h = startH;
-
-            float minW = minSize.x, maxW = maxSize.x;
-            float minH = minSize.y, maxH = maxSize.y;
-
-            switch (handle) {
-                case LEFT -> {
-                    float clampedNewW = Math.min(maxW, Math.max(minW, startW - dx));
-                    float dxApplied = startW - clampedNewW;     // 实际生效的 dx
-                    x = startX + dxApplied;
-                    w = clampedNewW;
-                }
-                case RIGHT -> {
-                    w = Math.min(maxW, Math.max(minW, startW + dx));
-                    x = startX;
-                }
-                case TOP -> {
-                    float clampedNewH = Math.min(maxH, Math.max(minH, startH - dy));
-                    float dyApplied = startH - clampedNewH;
-                    y = startY + dyApplied;
-                    h = clampedNewH;
-                }
-                case BOTTOM -> {
-                    h = Math.min(maxH, Math.max(minH, startH + dy));
-                    y = startY;
-                }
-                case TOP_LEFT -> {
-                    float clampedNewW = Math.min(maxW, Math.max(minW, startW - dx));
-                    float dxApplied = startW - clampedNewW;
-                    x = startX + dxApplied;
-                    w = clampedNewW;
-
-                    float clampedNewH = Math.min(maxH, Math.max(minH, startH - dy));
-                    float dyApplied = startH - clampedNewH;
-                    y = startY + dyApplied;
-                    h = clampedNewH;
-                }
-                case TOP_RIGHT -> {
-                    w = Math.min(maxW, Math.max(minW, startW + dx));
-                    x = startX;
-
-                    float clampedNewH = Math.min(maxH, Math.max(minH, startH - dy));
-                    float dyApplied = startH - clampedNewH;
-                    y = startY + dyApplied;
-                    h = clampedNewH;
-                }
-                case BOTTOM_LEFT -> {
-                    float clampedNewW = Math.min(maxW, Math.max(minW, startW - dx));
-                    float dxApplied = startW - clampedNewW;
-                    x = startX + dxApplied;
-                    w = clampedNewW;
-
-                    h = Math.min(maxH, Math.max(minH, startH + dy));
-                    y = startY;
-                }
-                case BOTTOM_RIGHT -> {
-                    w = Math.min(maxW, Math.max(minW, startW + dx));
-                    h = Math.min(maxH, Math.max(minH, startH + dy));
-                    x = startX;
-                    y = startY;
-                }
-            }
+            var rect = computeResizeRect(dragResize, d.x, d.y, minSize, maxSize);
 
             target.getLayout()
-                    .left(x)
-                    .top(y)
-                    .width(w)
-                    .height(h);
+                    .left(rect.x)
+                    .top(rect.y)
+                    .width(rect.z)
+                    .height(rect.w);
         });
         if (onFinish != null) element.addEventListener(UIEvents.DRAG_END, onFinish::accept);
     }
 
+    /**
+     * Computes the resized rectangle {@code (x, y, width, height)} for a drag given the accumulated
+     * local-space delta {@code (dx, dy)}, clamping the size to {@code [minSize, maxSize]}. Edge/corner
+     * handles that anchor the opposite side adjust the position so the anchored edge stays put.
+     */
+    public static Vector4f computeResizeRect(DragResize d, float dx, float dy, Vector2f minSize, Vector2f maxSize) {
+        float startX = d.startX(), startY = d.startY(), startW = d.startW(), startH = d.startH();
+        ResizeHandle handle = d.handle();
+        float x = startX, y = startY, w = startW, h = startH;
+
+        float minW = minSize.x, maxW = maxSize.x;
+        float minH = minSize.y, maxH = maxSize.y;
+
+        switch (handle) {
+            case LEFT -> {
+                float clampedNewW = Math.min(maxW, Math.max(minW, startW - dx));
+                float dxApplied = startW - clampedNewW;     // 实际生效的 dx
+                x = startX + dxApplied;
+                w = clampedNewW;
+            }
+            case RIGHT -> {
+                w = Math.min(maxW, Math.max(minW, startW + dx));
+                x = startX;
+            }
+            case TOP -> {
+                float clampedNewH = Math.min(maxH, Math.max(minH, startH - dy));
+                float dyApplied = startH - clampedNewH;
+                y = startY + dyApplied;
+                h = clampedNewH;
+            }
+            case BOTTOM -> {
+                h = Math.min(maxH, Math.max(minH, startH + dy));
+                y = startY;
+            }
+            case TOP_LEFT -> {
+                float clampedNewW = Math.min(maxW, Math.max(minW, startW - dx));
+                float dxApplied = startW - clampedNewW;
+                x = startX + dxApplied;
+                w = clampedNewW;
+
+                float clampedNewH = Math.min(maxH, Math.max(minH, startH - dy));
+                float dyApplied = startH - clampedNewH;
+                y = startY + dyApplied;
+                h = clampedNewH;
+            }
+            case TOP_RIGHT -> {
+                w = Math.min(maxW, Math.max(minW, startW + dx));
+                x = startX;
+
+                float clampedNewH = Math.min(maxH, Math.max(minH, startH - dy));
+                float dyApplied = startH - clampedNewH;
+                y = startY + dyApplied;
+                h = clampedNewH;
+            }
+            case BOTTOM_LEFT -> {
+                float clampedNewW = Math.min(maxW, Math.max(minW, startW - dx));
+                float dxApplied = startW - clampedNewW;
+                x = startX + dxApplied;
+                w = clampedNewW;
+
+                h = Math.min(maxH, Math.max(minH, startH + dy));
+                y = startY;
+            }
+            case BOTTOM_RIGHT -> {
+                w = Math.min(maxW, Math.max(minW, startW + dx));
+                h = Math.min(maxH, Math.max(minH, startH + dy));
+                x = startX;
+                y = startY;
+            }
+        }
+
+        return new Vector4f(x, y, w, h);
+    }
+
     @Nullable
     public static ResizeHandle detectResizeHandle(UIElement element, float mouseWorldX, float mouseWorldY, float padding) {
+        return detectResizeHandle(element, mouseWorldX, mouseWorldY, padding, EnumSet.allOf(ResizeHandle.class));
+    }
+
+    @Nullable
+    public static ResizeHandle detectResizeHandle(UIElement element, float mouseWorldX, float mouseWorldY, float padding, Set<ResizeHandle> allowedHandles) {
         var local = element.getLocalMouse(mouseWorldX, mouseWorldY).sub(element.getPositionX(), element.getPositionY());
         var mx = local.x;
         var my = local.y;
@@ -177,21 +200,25 @@ public class WindowDragHelper {
         boolean top = my >= 0 && my <= padding;
         boolean bottom = my >= (h - padding) && my <= h;
 
-        if (left && top) return ResizeHandle.TOP_LEFT;
-        if (right && top) return ResizeHandle.TOP_RIGHT;
-        if (left && bottom) return ResizeHandle.BOTTOM_LEFT;
-        if (right && bottom) return ResizeHandle.BOTTOM_RIGHT;
+        if (left && top && allowedHandles.contains(ResizeHandle.TOP_LEFT)) return ResizeHandle.TOP_LEFT;
+        if (right && top && allowedHandles.contains(ResizeHandle.TOP_RIGHT)) return ResizeHandle.TOP_RIGHT;
+        if (left && bottom && allowedHandles.contains(ResizeHandle.BOTTOM_LEFT)) return ResizeHandle.BOTTOM_LEFT;
+        if (right && bottom && allowedHandles.contains(ResizeHandle.BOTTOM_RIGHT)) return ResizeHandle.BOTTOM_RIGHT;
 
-        if (left) return ResizeHandle.LEFT;
-        if (right) return ResizeHandle.RIGHT;
-        if (top) return ResizeHandle.TOP;
-        if (bottom) return ResizeHandle.BOTTOM;
+        if (left && allowedHandles.contains(ResizeHandle.LEFT)) return ResizeHandle.LEFT;
+        if (right && allowedHandles.contains(ResizeHandle.RIGHT)) return ResizeHandle.RIGHT;
+        if (top && allowedHandles.contains(ResizeHandle.TOP)) return ResizeHandle.TOP;
+        if (bottom && allowedHandles.contains(ResizeHandle.BOTTOM)) return ResizeHandle.BOTTOM;
 
         return null;
     }
 
     public static void drawResizeIcon(GUIContext guiContext, UIElement element, float padding) {
-        var handle = WindowDragHelper.detectResizeHandle(element, guiContext.mouseX, guiContext.mouseY, padding);
+        drawResizeIcon(guiContext, element, padding, EnumSet.allOf(ResizeHandle.class));
+    }
+
+    public static void drawResizeIcon(GUIContext guiContext, UIElement element, float padding, Set<ResizeHandle> allowedHandles) {
+        var handle = WindowDragHelper.detectResizeHandle(element, guiContext.mouseX, guiContext.mouseY, padding, allowedHandles);
         if (handle == null) return;
         guiContext.postRendering(ctx -> {
             // Draw in screen space: reset the pose to identity so that mouseX/mouseY

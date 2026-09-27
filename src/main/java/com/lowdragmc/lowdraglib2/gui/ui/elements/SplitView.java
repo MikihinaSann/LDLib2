@@ -8,16 +8,17 @@ import com.lowdragmc.lowdraglib2.gui.texture.SpriteTexture;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvent;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
+import com.lowdragmc.lowdraglib2.gui.ui.layout.LayoutProperties;
 import com.lowdragmc.lowdraglib2.gui.ui.rendering.GUIContext;
 import com.lowdragmc.lowdraglib2.registry.annotation.LDLRegister;
 import com.lowdragmc.lowdraglib2.utils.XmlUtils;
 import dev.vfyjxf.taffy.style.FlexDirection;
+import dev.vfyjxf.taffy.style.TaffyDimension;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.experimental.Accessors;
 import net.minecraft.MethodsReturnNonnullByDefault;
 import net.minecraft.util.Mth;
-import org.appliedenergistics.yoga.YogaUnit;
 import org.w3c.dom.Element;
 
 import javax.annotation.ParametersAreNonnullByDefault;
@@ -57,6 +58,12 @@ public abstract class SplitView extends UIElement {
 
     public abstract float getPercentage();
 
+    private static float getPercentValue(TaffyDimension dimension) {
+        if (!dimension.isPercent()) return 0;
+        var value = dimension.getValue();
+        return value <= 1 ? value * 100 : value;
+    }
+
     public SplitView first(UIElement first) {
         this.first.clearAllChildren();
         this.first.addChild(first);
@@ -69,7 +76,16 @@ public abstract class SplitView extends UIElement {
         return this;
     }
 
+    /**
+     * Whether the divider can be grabbed. A hidden slot has zero size, which would leave the handle
+     * sitting on the pane's own edge — a stray drag target for a splitter that is not on screen.
+     */
+    protected boolean isDividerActive() {
+        return first.isDisplayed() && second.isDisplayed();
+    }
+
     protected void onMouseDown(UIEvent event) {
+        if (!isDividerActive()) return;
         // use int mouse coordinates to avoid issues with floating point precision
         if (event.button == 0 && isHoverDragging((int) event.x, (int) event.y)){
             var icon = getDraggingIcon();
@@ -82,7 +98,7 @@ public abstract class SplitView extends UIElement {
     @Override
     public void drawBackgroundAdditional(GUIContext guiContext) {
         super.drawBackgroundAdditional(guiContext);
-        if (isHoverDragging(guiContext.mouseX, guiContext.mouseY)) {
+        if (isDividerActive() && isHoverDragging(guiContext.mouseX, guiContext.mouseY)) {
             guiContext.postRendering(ctx -> {
                 var icon = getDraggingIcon();
                 var width = icon.spriteSize.width;
@@ -171,15 +187,17 @@ public abstract class SplitView extends UIElement {
 
         @Override
         public Horizontal setPercentage(float percentage) {
-            first.layout(layout -> layout.widthPercent(Mth.clamp(percentage, getMinPercentage(), getMaxPercentage())));
+            first.getLayout().widthPercent(Mth.clamp(percentage, getMinPercentage(), getMaxPercentage()));
             return this;
         }
 
         @Override
         public float getPercentage() {
-            var width = first.getLayout().getWidth();
-            if (width.isPercent()) return width.getValue();
-            return 0;
+            var width = first.getStyleBag().computeCandidate(LayoutProperties.WIDTH);
+            if (width == null) {
+                width = first.getLayout().getWidth();
+            }
+            return getPercentValue(width);
         }
     }
 
@@ -228,15 +246,17 @@ public abstract class SplitView extends UIElement {
 
         @Override
         public Vertical setPercentage(float percentage) {
-            first.layout(layout -> layout.heightPercent(Mth.clamp(percentage, getMinPercentage(), getMaxPercentage())));
+            first.getLayout().heightPercent(Mth.clamp(percentage, getMinPercentage(), getMaxPercentage()));
             return this;
         }
 
         @Override
         public float getPercentage() {
-            var height = first.getLayout().getHeight();
-            if (height.isPercent()) return height.getValue();
-            return 0;
+            var height = first.getStyleBag().computeCandidate(LayoutProperties.HEIGHT);
+            if (height == null) {
+                height = first.getLayout().getHeight();
+            }
+            return getPercentValue(height);
         }
     }
 }

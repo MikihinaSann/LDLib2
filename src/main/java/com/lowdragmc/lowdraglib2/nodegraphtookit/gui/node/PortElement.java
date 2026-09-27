@@ -1,5 +1,6 @@
 package com.lowdragmc.lowdraglib2.nodegraphtookit.gui.node;
 
+import com.lowdragmc.lowdraglib2.gui.ui.Style;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvent;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.port.PortCapacity;
@@ -40,25 +41,36 @@ public class PortElement extends GraphElement<PortModel> {
 
     public PortElement(PortModel portModel) {
         super(portModel);
+        addClass("__port__");
     }
 
     // region build ui
 
     @Override
     protected void buildPartList() {
-        parts.add(connector = new PortConnectorWithIconElement(getModel()));
+        parts.add(connector = createConnector());
         parts.add(constant = new PortConstantEditorElement(getModel()));
+    }
+
+    /**
+     * Factory for the connector element. Overridden by {@link VerticalPortElement} to spawn a
+     * connector that stacks the wire dot above the type-icon + label.
+     */
+    protected PortConnectorWithIconElement createConnector() {
+        return new PortConnectorWithIconElement(getModel());
     }
 
     @Override
     protected void buildUI() {
         super.buildUI();
-        getLayout().flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(2);
+        Style.defaultPipeline(getLayout(), l -> l.flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER)
+                .gapAll(2)
+                .minHeight(14));
         connector.getWireDragParts().forEach(p -> p.addEventListener(UIEvents.MOUSE_DOWN, this::onMouseDown));
         connector.addEventListener(UIEvents.DRAG_SOURCE_UPDATE, this::onDragSourceUpdate);
         connector.addEventListener(UIEvents.DRAG_END, this::onDragEnd);
         addChildren(connector, constant);
-        internalSetup();
     }
 
     // endregion
@@ -124,8 +136,9 @@ public class PortElement extends GraphElement<PortModel> {
         super.updateUIFromModel(visitor);
         var model = getModel();
         if (visitor.hasHint(ChangeHint.DATA)) {
-            getLayout().direction(model.getDirection() == PortDirection.INPUT ? TaffyDirection.LTR :
-                            model.getDirection() == PortDirection.OUTPUT ? TaffyDirection.RTL : TaffyDirection.INHERIT);
+            // direction follows port direction (model data) — pin via IMPORTANT.
+            Style.importantPipeline(getLayout(), l -> l.direction(model.getDirection() == PortDirection.INPUT ? TaffyDirection.LTR :
+                            model.getDirection() == PortDirection.OUTPUT ? TaffyDirection.RTL : TaffyDirection.INHERIT));
         }
     }
 

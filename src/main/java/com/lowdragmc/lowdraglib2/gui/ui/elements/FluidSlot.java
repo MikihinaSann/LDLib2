@@ -23,6 +23,8 @@ import com.lowdragmc.lowdraglib2.gui.ui.style.PropertyRegistry;
 import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
 import com.lowdragmc.lowdraglib2.gui.util.DrawerHelper;
 import com.lowdragmc.lowdraglib2.gui.util.TextFormattingUtil;
+import com.lowdragmc.lowdraglib2.integration.xei.XEITooltipContext;
+import com.lowdragmc.lowdraglib2.integration.kjs.KJSBindings;
 import com.lowdragmc.lowdraglib2.registry.annotation.LDLRegister;
 import com.lowdragmc.lowdraglib2.syncdata.ISubscription;
 import com.lowdragmc.lowdraglib2.syncdata.annotation.SkipPersistedValue;
@@ -56,6 +58,7 @@ import java.util.stream.Stream;
 @MethodsReturnNonnullByDefault
 @ParametersAreNonnullByDefault
 @Accessors(chain = true)
+@KJSBindings
 @LDLRegister(name = "fluid-slot", group = "inventory", registry = "ldlib2:ui_element")
 public class FluidSlot extends BindableUIElement<FluidStack> {
     @Configurable(name = "SlotStyle")
@@ -200,7 +203,6 @@ public class FluidSlot extends BindableUIElement<FluidStack> {
         return this;
     }
 
-
     private void tryClickContainer(boolean isShiftKeyDown) {
         // TODO: Port NeoForge FluidUtil logic to Fabric for GUI fluid container clicking.
     }
@@ -218,13 +220,24 @@ public class FluidSlot extends BindableUIElement<FluidStack> {
         return setValue(fluid, notify);
     }
 
+    /**
+     * Delegates to {@link #getFullTooltipTexts(boolean)}, override that one instead of this.
+     */
     public List<Component> getFullTooltipTexts() {
+        return getFullTooltipTexts(true);
+    }
+
+    /**
+     * @param withFluidName whether the display name of the fluid should be included. XEI recipe slots
+     *                      render it themselves, so they ask for the tooltips without it.
+     */
+    public List<Component> getFullTooltipTexts(boolean withFluidName) {
         var tooltips = new ArrayList<Component>();
         if (slotStyle.showFluidTooltips()) {
             var fluidStack = getFluid();
             capacity = (int) Math.max(capacity, fluidStack.getAmount());
             if (!fluidStack.isEmpty()) {
-                tooltips.add(FluidHelper.getDisplayName(fluidStack));
+                if (withFluidName) tooltips.add(FluidHelper.getDisplayName(fluidStack));
                 tooltips.add(Component.translatable("ldlib.fluid.amount", fluidStack.getAmount(), capacity).append(" " + FluidHelper.getUnit()));
                 tooltips.add(Component.translatable("ldlib.fluid.temperature", FluidHelper.getTemperature(fluidStack)));
                 tooltips.add(Component.translatable(FluidHelper.isLighterThanAir(fluidStack) ? "ldlib.fluid.state_gas" : "ldlib.fluid.state_liquid"));
@@ -246,7 +259,9 @@ public class FluidSlot extends BindableUIElement<FluidStack> {
     protected void onHoverTooltips(UIEvent event) {
         var item = getValue();
         if (item.isEmpty()) return;
-        event.hoverTooltips = new HoverTooltips(getFullTooltipTexts(), null, null, null);
+        // an XEI recipe slot renders the name of the fluid itself, do not repeat it there
+        var withFluidName = event.customData != XEITooltipContext.RECIPE_SLOT;
+        event.hoverTooltips = new HoverTooltips(getFullTooltipTexts(withFluidName), null, null, null);
     }
 
     @Override
@@ -257,7 +272,7 @@ public class FluidSlot extends BindableUIElement<FluidStack> {
     @Override
     public FluidSlot setValue(@Nullable FluidStack value, boolean notify) {
         if (value == null) value = FluidStack.empty();
-        if (value.isFluidEqual(fluid)) return this;
+        if (fluid.isFluidEqual(value)) return this;
         this.fluid = value;
         if (notify) notifyListeners();
         return this;
@@ -372,5 +387,4 @@ public class FluidSlot extends BindableUIElement<FluidStack> {
 
         super.loadXml(element);
     }
-
 }

@@ -8,8 +8,10 @@ import com.lowdragmc.lowdraglib2.networking.LDLNetworking;
 import com.lowdragmc.lowdraglib2.networking.both.PacketModularUISync;
 import com.lowdragmc.lowdraglib2.networking.both.PacketRPCBlockEntity;
 import com.lowdragmc.lowdraglib2.networking.both.PacketRPCPacket;
-import com.lowdragmc.lowdraglib2.networking.c2s.CPacketUIRPCEvent;
+import com.lowdragmc.lowdraglib2.networking.both.PacketUIRPCEvent;
+import com.lowdragmc.lowdraglib2.networking.both.PacketUIRPCEventReturn;
 import com.lowdragmc.lowdraglib2.networking.rpc.RPCPacketDistributor;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.api.type.TypeHandles;
 import com.lowdragmc.lowdraglib2.plugin.ILDLibPlugin;
 import com.lowdragmc.lowdraglib2.plugin.LDLibPlugin;
 import com.lowdragmc.lowdraglib2.syncdata.AccessorRegistries;
@@ -35,8 +37,11 @@ public class CommonProxy {
         LDLNetworking.register();
 
         // Register C2S networking receivers
-        ServerPlayNetworking.registerGlobalReceiver(CPacketUIRPCEvent.TYPE, (payload, context) -> {
-            context.server().execute(() -> CPacketUIRPCEvent.handle(payload, context.player(), context.player().registryAccess()));
+        ServerPlayNetworking.registerGlobalReceiver(PacketUIRPCEvent.TYPE, (payload, context) -> {
+            context.server().execute(() -> PacketUIRPCEvent.handle(payload, context.player(), context.player().registryAccess()));
+        });
+        ServerPlayNetworking.registerGlobalReceiver(PacketUIRPCEventReturn.TYPE, (payload, context) -> {
+            context.server().execute(() -> PacketUIRPCEventReturn.handle(payload, context.player(), context.player().registryAccess()));
         });
         ServerPlayNetworking.registerGlobalReceiver(PacketRPCBlockEntity.TYPE, (payload, context) -> {
             context.server().execute(() -> PacketRPCBlockEntity.handle(payload, context.player(), context.player().registryAccess()));
@@ -80,6 +85,7 @@ public class CommonProxy {
         RPCPacketDistributor.init();
         PropertyRegistry.init();
         LDMenuTypes.init();
+        TypeHandles.init();
     }
 
     private static <T extends Block> T register(String name, T block) {

@@ -2,11 +2,17 @@ package com.lowdragmc.lowdraglib2.client.renderer.impl;
 
 import com.lowdragmc.lowdraglib2.LDLib2;
 import com.lowdragmc.lowdraglib2.client.model.ModelFactory;
-import com.lowdragmc.lowdraglib2.client.renderer.*;
+import com.lowdragmc.lowdraglib2.client.renderer.IBlockRendererProvider;
+import com.lowdragmc.lowdraglib2.client.renderer.IItemRendererProvider;
+import com.lowdragmc.lowdraglib2.client.renderer.IRenderer;
+import com.lowdragmc.lowdraglib2.client.renderer.ChunkRenderTypeSet;
+import com.lowdragmc.lowdraglib2.client.renderer.ModelData;
+import com.lowdragmc.lowdraglib2.client.renderer.TriState;
 import com.lowdragmc.lowdraglib2.configurator.ui.Configurator;
 import com.lowdragmc.lowdraglib2.configurator.ui.ConfiguratorGroup;
 import com.lowdragmc.lowdraglib2.configurator.annotation.ConfigSetter;
 import com.lowdragmc.lowdraglib2.configurator.annotation.Configurable;
+import com.lowdragmc.lowdraglib2.editor.resource.IRendererResource;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Dialog;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Button;
 import com.lowdragmc.lowdraglib2.registry.annotation.LDLRegisterClient;
@@ -14,6 +20,8 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import dev.vfyjxf.taffy.style.AlignItems;
 import lombok.Getter;
 import net.minecraft.client.renderer.RenderType;
+import net.fabricmc.api.EnvType;
+import net.fabricmc.api.Environment;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.block.model.BakedQuad;
@@ -40,10 +48,22 @@ public class IModelRenderer implements IRenderer {
     @Getter
     @Configurable
     protected ResourceLocation modelLocation;
+
+    @Environment(EnvType.CLIENT)
     @Nullable
     protected volatile BakedModel itemModel;
+    @Environment(EnvType.CLIENT)
     private volatile boolean itemModelInitialized;
-    protected Map<ModelState, BakedModel> modelCaches;
+
+    // resolved once per renderer to avoid re-acquiring the bakery lock on every bake
+    @Environment(EnvType.CLIENT)
+    @Nullable
+    protected volatile UnbakedModel cachedUnbakedModel;
+    @Environment(EnvType.CLIENT)
+    private volatile boolean unbakedModelInitialized;
+
+    @Environment(EnvType.CLIENT)
+    protected volatile Map<ModelStateCacheKey, BakedModel> modelCaches;
 
     protected IModelRenderer() {
         this(ResourceLocation.withDefaultNamespace("block/furnace"));
@@ -57,11 +77,14 @@ public class IModelRenderer implements IRenderer {
         }
     }
 
-    private synchronized void clearCache() {
+    @Override
+    public synchronized void clearCache() {
         if (LDLib2.isClient()) {
             itemModel = null;
             itemModelInitialized = false;
-            if (modelCaches != null) modelCaches.clear();
+            cachedUnbakedModel = null;
+            unbakedModelInitialized = false;
+            if (modelCaches != null) modelCaches = new ConcurrentHashMap<>();
         }
     }
 
@@ -76,6 +99,7 @@ public class IModelRenderer implements IRenderer {
     }
 
     @Override
+    @Environment(EnvType.CLIENT)
     @Nonnull
     public TextureAtlasSprite getParticleTexture(@Nullable BlockAndTintGetter level, @Nullable BlockPos pos, ModelData modelData) {
         BakedModel model = getItemBakedModel();
@@ -84,25 +108,53 @@ public class IModelRenderer implements IRenderer {
         }
         return model.getParticleIcon();
     }
+
+    @Environment(EnvType.CLIENT)
+    @Nullable
     protected UnbakedModel getModel() {
-        return ModelFactory.getUnBakedModel(modelLocation);
+        if (!unbakedModelInitialized) {
+            synchronized (this) {
+                if (!unbakedModelInitialized) {
+                    // fast path: models registered through the RegisterAdditional pipeline
+                    var model = ModelFactory.getTopLevelModel(new ModelResourceLocation(modelLocation, "fabric_resource"));
+                    if (model == null) {
+                        // renderer created after the initial reload: dynamically load & resolve
+                        // the model under the bakery lock (see ModelFactory#loadUnbakedModelDynamically)
+                        model = ModelFactory.loadUnbakedModelDynamically(modelLocation);
+                    }
+                    cachedUnbakedModel = model;
+                    unbakedModelInitialized = true;
+                }
+            }
+        }
+        return cachedUnbakedModel;
+    }
+
+    @Environment(EnvType.CLIENT)
+    protected boolean isTopLevelModelMissing() {
+        return ModelFactory.getTopLevelModel(new ModelResourceLocation(modelLocation, "fabric_resource")) == null;
     }
 
     @Override
+    @Environment(EnvType.CLIENT)
     public void renderItem(ItemStack stack,
                            ItemDisplayContext transformType,
                            boolean leftHand, PoseStack poseStack,
                            MultiBufferSource buffer, int combinedLight,
                            int combinedOverlay, BakedModel model) {
         IItemRendererProvider.disabled.set(true);
-        model = getItemBakedModel(stack);
-        if (model != null) {
-            Minecraft.getInstance().getItemRenderer().render(stack, transformType, leftHand, poseStack, buffer, combinedLight, combinedOverlay, model);
+        try {
+            model = getItemBakedModel(stack);
+            if (model != null) {
+                Minecraft.getInstance().getItemRenderer().render(stack, transformType, leftHand, poseStack, buffer, combinedLight, combinedOverlay, model);
+            }
+        } finally {
+            IItemRendererProvider.disabled.set(false);
         }
-        IItemRendererProvider.disabled.set(false);
     }
 
     @Override
+    @Environment(EnvType.CLIENT)
     public boolean useBlockLight(ItemStack stack) {
         var model = getItemBakedModel(stack);
         if (model != null) {
@@ -112,6 +164,7 @@ public class IModelRenderer implements IRenderer {
     }
 
     @Override
+    @Environment(EnvType.CLIENT)
     public TriState useAO() {
         var model = getItemBakedModel();
         if (model != null) {
@@ -126,6 +179,7 @@ public class IModelRenderer implements IRenderer {
     }
 
     @Override
+    @Environment(EnvType.CLIENT)
     public List<BakedQuad> renderModel(@Nullable BlockAndTintGetter level, @Nullable BlockPos pos, @Nullable BlockState state, @Nullable Direction side, RandomSource rand, ModelData data, @Nullable RenderType renderType) {
         var ibakedmodel = getBlockBakedModel(level, pos, state);
         if (ibakedmodel == null) return Collections.emptyList();
@@ -133,58 +187,77 @@ public class IModelRenderer implements IRenderer {
     }
 
     @Override
+    @Environment(EnvType.CLIENT)
     public ChunkRenderTypeSet getRenderTypes(BlockAndTintGetter level, BlockPos pos, BlockState state, RandomSource rand, ModelData modelData) {
         var ibakedmodel = getBlockBakedModel(level, pos, state);
-        if (ibakedmodel != null) return com.lowdragmc.lowdraglib2.client.renderer.ChunkRenderTypeSet.of(net.minecraft.client.renderer.ItemBlockRenderTypes.getChunkRenderType(state));
+        if (ibakedmodel != null) return ChunkRenderTypeSet.of(net.minecraft.client.renderer.ItemBlockRenderTypes.getChunkRenderType(state));
         return IRenderer.super.getRenderTypes(level, pos, state, rand, modelData);
     }
+
+    @Environment(EnvType.CLIENT)
     @Nullable
     protected BakedModel getItemBakedModel() {
         if (!itemModelInitialized) {
             synchronized (this) {
                 if (!itemModelInitialized) {
                     var model = getModel();
-                    itemModel = model.bake(
-                            ModelFactory.getModelBaker(),
-                            this::materialMapping,
-                            BlockModelRotation.X0_Y0);
+                    if (model != null) {
+                        itemModel = model.bake(
+                                ModelFactory.getModelBaker(),
+                                this::materialMapping,
+                                BlockModelRotation.X0_Y0);
+                    }
                     itemModelInitialized = true;
                 }
             }
         }
         return itemModel;
     }
+
+    @Environment(EnvType.CLIENT)
     @Nullable
     protected BakedModel getItemBakedModel(ItemStack itemStack) {
         return getItemBakedModel();
     }
+
+    @Environment(EnvType.CLIENT)
     @Nullable
     protected BakedModel getBlockBakedModel(@Nullable BlockAndTintGetter level, @Nullable BlockPos pos, @Nullable BlockState state) {
         if (level != null && pos != null && state != null && state.getBlock() instanceof IBlockRendererProvider provider) {
             var modelState = provider.getModelState(level, pos, state);
             if (modelState != null) {
-                return modelCaches.computeIfAbsent(modelState, ms -> getModel().bake(
-                        ModelFactory.getModelBaker(),
-                        this::materialMapping,
-                        ms));
+                return modelCaches.computeIfAbsent(ModelStateCacheKey.from(modelState), key -> bakeBlockModel(modelState));
             }
         }
-        return modelCaches.computeIfAbsent(BlockModelRotation.X0_Y0, ms -> getModel().bake(
+        return modelCaches.computeIfAbsent(ModelStateCacheKey.from(BlockModelRotation.X0_Y0), key -> bakeBlockModel(BlockModelRotation.X0_Y0));
+    }
+
+    @Environment(EnvType.CLIENT)
+    @Nullable
+    private BakedModel bakeBlockModel(ModelState modelState) {
+        var model = getModel();
+        if (model == null) return null;
+        return model.bake(
                 ModelFactory.getModelBaker(),
                 this::materialMapping,
-                ms));
+                modelState);
     }
+
+
+    @Environment(EnvType.CLIENT)
     protected TextureAtlasSprite materialMapping(Material material) {
         return material.sprite();
     }
     
     @Override
+    @Environment(EnvType.CLIENT)
     public void onAdditionalModel(Consumer<ResourceLocation> registry) {
         registry.accept(modelLocation);
         clearCache();
     }
 
     @Override
+    @Environment(EnvType.CLIENT)
     public boolean isGui3d() {
         var model = getItemBakedModel();
         if (model == null) {
@@ -198,22 +271,37 @@ public class IModelRenderer implements IRenderer {
         this.modelLocation = modelLocation;
         clearCache();
     }
+
+    @Environment(EnvType.CLIENT)
     public void updateModelWithReloadingResource(ResourceLocation modelLocation) {
         updateModelWithoutReloadingResource(modelLocation);
-        var unBakedModel = getModel();
-        if (unBakedModel == ModelFactory.getUnBakedModel(ModelBakery.MISSING_MODEL_LOCATION)) {
-            Minecraft.getInstance().reloadResourcePacks();
+        if (isTopLevelModelMissing()) {
+            reloadResourcesAndRefreshRendererContainers();
         }
     }
 
+    @Environment(EnvType.CLIENT)
+    protected void reloadResourcesAndRefreshRendererContainers() {
+        IRendererResource.INSTANCE.reloadResourcesAndRefreshOpenedContainers();
+    }
+
     @Override
+    @Environment(EnvType.CLIENT)
     public void buildConfigurator(ConfiguratorGroup father) {
         IRenderer.super.buildConfigurator(father);
         var buttonConfigurator = new Configurator();
-        father.addConfigurators(buttonConfigurator.addInlineChild(new Button().setText("ldlib.gui.editor.tips.select_model").setOnClick(e -> {
+        Button reloadButton = new Button().setText("ldlib.gui.editor.menu.reload_resource")
+                .setOnClick(e -> {
+                    clearCache();
+                    reloadResourcesAndRefreshRendererContainers();
+                    e.currentElement.setActive(false);
+                });
+        reloadButton.layout(layout -> layout.alignSelf(AlignItems.CENTER));
+        reloadButton.setActive(isTopLevelModelMissing());
+        Button selectButton = new Button().setText("ldlib.gui.editor.tips.select_model").setOnClick(e -> {
             Dialog.showFileDialog("ldlib.gui.editor.tips.select_model", LDLib2.getAssetsDir(), true, node -> {
-                if (!node.getKey().isFile() || node.getKey().getName().toLowerCase().endsWith(".json".toLowerCase())) {
-                    if (node.getKey().isFile()) {
+                if (!node.isFile() || node.getKey().getName().toLowerCase().endsWith(".json".toLowerCase())) {
+                    if (node.isFile()) {
                         return getModelFromFile(node.getKey()) != null;
                     }
                     return true; // allow directories
@@ -224,11 +312,37 @@ public class IModelRenderer implements IRenderer {
                     var newModel = getModelFromFile(r);
                     if (newModel == null) return;
                     if (newModel.equals(modelLocation)) return;
-                    updateModelWithReloadingResource(newModel);
+                    updateModelWithoutReloadingResource(newModel);
+                    reloadButton.setActive(isTopLevelModelMissing());
                     buttonConfigurator.notifyChanges();
                 }
             }).show(e.currentElement.getModularUI());
-        }).layout(layout -> layout.alignSelf(AlignItems.CENTER))));
+        });
+        selectButton.layout(layout -> layout.alignSelf(AlignItems.CENTER));
+        father.addConfigurators(buttonConfigurator.addInlineChildren(selectButton, reloadButton));
+    }
+
+    @Environment(EnvType.CLIENT)
+    protected record ModelStateCacheKey(TransformationKey rotation, boolean uvLocked) {
+        static ModelStateCacheKey from(ModelState modelState) {
+            return new ModelStateCacheKey(TransformationKey.from(modelState.getRotation()), modelState.isUvLocked());
+        }
+    }
+
+    @Environment(EnvType.CLIENT)
+    protected record TransformationKey(
+            float m00, float m01, float m02, float m03,
+            float m10, float m11, float m12, float m13,
+            float m20, float m21, float m22, float m23,
+            float m30, float m31, float m32, float m33) {
+        static TransformationKey from(com.mojang.math.Transformation transformation) {
+            var matrix = transformation.getMatrix();
+            return new TransformationKey(
+                    matrix.m00(), matrix.m01(), matrix.m02(), matrix.m03(),
+                    matrix.m10(), matrix.m11(), matrix.m12(), matrix.m13(),
+                    matrix.m20(), matrix.m21(), matrix.m22(), matrix.m23(),
+                    matrix.m30(), matrix.m31(), matrix.m32(), matrix.m33());
+        }
     }
 
     @Nullable

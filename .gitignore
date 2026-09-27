@@ -14,3 +14,22 @@ bin/
 # OS
 .DS_Store
 Thumbs.db
+*.DS_Store
+*.log
+
+# other
+eclipse
+run
+runs
+run-data
+
+repo
+
+/.claude
+CLAUDE.md
+AGENTS.md
+/logs
+.narrafork/
+/docs
+/.codex
+/.gradle-user-home

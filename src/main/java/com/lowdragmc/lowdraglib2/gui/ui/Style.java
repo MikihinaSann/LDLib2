@@ -16,6 +16,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -141,6 +142,7 @@ public abstract class Style implements IConfigurable, IPersistedSerializable {
                 .filter(slot -> slot.origin() == origin)
                 .sorted(((a, b) -> StyleSlot.compare(b, a)))
                 .map(StyleSlot::value)
+                .filter(Objects::nonNull)
                 .findFirst()
                 .orElse(null));
     }
@@ -153,6 +155,16 @@ public abstract class Style implements IConfigurable, IPersistedSerializable {
         var value = styleBag.getComputed(property);
         if (value != null) return value;
         return property.initialValue;
+    }
+
+    /**
+     * Same as {@link #getValueSave(Property)}, but resolves the candidates on the fly instead of reading
+     * the value the style engine computed last. Use it when the value is needed before the style bag has
+     * been computed, or right after a setter within the same frame, where the computed value is still stale.
+     */
+    public <T> T getValueImmediate(Property<T> property) {
+        var candidate = styleBag.computeCandidate(property);
+        return candidate != null ? candidate : getValueSave(property);
     }
 
     public void copyFrom(Style other) {

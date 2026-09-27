@@ -6,11 +6,24 @@ import com.lowdragmc.lowdraglib2.LDLib2;
 import com.lowdragmc.lowdraglib2.Platform;
 import com.lowdragmc.lowdraglib2.configurator.EditAction;
 import com.lowdragmc.lowdraglib2.gui.ColorPattern;
+import com.lowdragmc.lowdraglib2.gui.sync.bindings.impl.SupplierDataSource;
+import com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture;
 import com.lowdragmc.lowdraglib2.gui.texture.Icons;
 import com.lowdragmc.lowdraglib2.gui.texture.SDFRectTexture;
+import com.lowdragmc.lowdraglib2.gui.ui.Style;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
+import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollDisplay;
+import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollerMode;
+import com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap;
+import com.lowdragmc.lowdraglib2.gui.ui.data.Vertical;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Button;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Menu;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.Toggle;
+import com.lowdragmc.lowdraglib2.editor.keymap.EditorActions;
+import net.minecraft.resources.ResourceLocation;
+import com.lowdragmc.lowdraglib2.editor.keymap.Keymaps;
 import com.lowdragmc.lowdraglib2.gui.ui.event.CommandEvents;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvent;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
@@ -18,33 +31,44 @@ import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
 import com.lowdragmc.lowdraglib2.gui.ui.utils.HistoryStack;
 import com.lowdragmc.lowdraglib2.gui.util.TreeBuilder;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.graph.Graph;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.api.graph.GraphLogger;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.port.PortType;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.editor.GraphEditorView;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.editor.GraphResourceProviderContainer;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.blackboard.Blackboard;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.command.CreateForeignLocalSubgraphCommand;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.command.CreateSubgraphFromSelectionCommand;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.command.ElementRenameColorCommands;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.command.GraphCommands;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.command.GraphCommandListener;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.command.IGraphCommand;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.command.ImportExternalSubgraphCommand;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.command.NodeCommands;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.command.WireCommands;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.dependency.ElementUpdateVisitor;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.dependency.ModelUpdateVisitor;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.command.LayoutCommands;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.itemlibrary.ItemLibrary;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.layout.GraphLayoutAlgorithm;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.snap.SnapEngine;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.snap.SnapGuide;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.snap.SnapSettings;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.wire.WireRouteStyle;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.itemlibrary.NodeModelLibraryItem;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.node.NodeElement;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.wiget.PlacematElement;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.wiget.StickyNoteElement;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.*;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.*;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.wiget.PlacematModel;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.graph.GraphModel;
-import com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.AbstractNodeModel;
-import com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.NodePlaceholder;
-import com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.NodePreviewModel;
-import com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.PortModel;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.model.wire.IGhostWireModel;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.wire.PortMigrationResult;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.wire.WireModel;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.wire.WirePlaceHolder;
-import dev.vfyjxf.taffy.style.AlignContent;
-import dev.vfyjxf.taffy.style.FlexDirection;
-import dev.vfyjxf.taffy.style.TaffyPosition;
+import dev.vfyjxf.taffy.style.*;
 import lombok.Getter;
+import lombok.Setter;
 import net.minecraft.MethodsReturnNonnullByDefault;
 import net.minecraft.network.chat.Component;
 import org.apache.commons.lang3.function.Consumers;
@@ -72,15 +96,49 @@ public class GraphView extends UIElement {
     public final Blackboard blackboard = new Blackboard(this);
     public final GraphInspector inspector = new GraphInspector(this);
     public final GraphPreview preview = new GraphPreview(this);
+    private final UIElement graphLogFooter = new UIElement();
+    private final UIElement graphLogHeader = new UIElement();
+    private final Label graphLogSummary = new Label();
+    private final Label graphLogCount = new Label();
+    private final ScrollerView graphLogList = new ScrollerView();
+
+    /**
+     * Optional instance-level veto consulted by {@link #dispatchCommand} before a command runs;
+     * return {@code false} to block. Layered on top of the graph's own
+     * {@link GraphModel#canExecuteCommand} policy (both must allow). For policy tied to the graph
+     * definition, override {@link com.lowdragmc.lowdraglib2.nodegraphtookit.api.graph.Graph#canExecuteCommand} instead.
+     */
+    @Nullable @Setter @Getter
+    private Predicate<IGraphCommand> commandInterceptor;
+    /** Observers notified after a command executes (see {@link #addCommandListener}). */
+    private final List<GraphCommandListener> commandListeners = new ArrayList<>();
+    /**
+     * A view that shows a graph without letting it be changed — what a built-in resource opens as.
+     *
+     * <p>Enforced at the one place every structural change passes through ({@link #dispatchCommand}),
+     * so a mutation added later is read-only-safe by default rather than by being remembered. The rest
+     * of what this flag switches off is <em>presentation</em>: interactions whose feedback would be a
+     * lie if the command behind them can never land — starting a node drag that would snap back, a
+     * context menu of entries that all no-op, an inline value field that accepts a keystroke and
+     * discards it.</p>
+     *
+     * @see #setReadOnly(boolean)
+     */
+    @Getter
+    private boolean readOnly = false;
 
     // runtime
     @Nullable
     private GraphModel.CopyPasteData clipboardData = null;
+    /** Top-left of the copied cluster's bounding box, so paste can anchor it at the cursor. */
+    @Nullable
+    private Vector2f clipboardAnchor = null;
     private boolean requireFitGraph = false;
     @Getter
     private GraphChangeset changeset = new GraphChangeset();
     @Getter
     private final UIElement panelLayer = new UIElement();
+    public final DockManager dockManager = new DockManager(this);
     private final Map<String, UIElement> layers = new HashMap<>();
     private final UIElement fallbackLayer = new UIElement();
     @Nullable @Getter
@@ -108,32 +166,80 @@ public class GraphView extends UIElement {
     protected boolean isWireDragging = false;
     @Getter
     protected HistoryStack historyStack = new HistoryStack();
+    private List<GraphLogger.Entry> graphLogEntries = List.of();
+    private boolean graphLogExpanded = false;
+
+    /** When true, drag-moved and newly-created elements snap their positions to {@link #gridSnapSize}. */
+    @Getter
+    private boolean snapToGrid = GraphViewPreferences.Entry.DEFAULTS.snapToGrid();
+    /** Pixel granularity for snap-to-grid alignment. Runtime-mutable; default 16. */
+    @Getter
+    private float gridSnapSize = GraphViewPreferences.Entry.DEFAULTS.gridSnapSize();
+    /**
+     * When true, a drag also lines up with the edges and centres of nearby elements, and draws a
+     * guide through whatever it lined up with. Takes precedence over the grid when both are in
+     * reach — see {@link SnapEngine}.
+     */
+    @Getter
+    private boolean snapToElements = GraphViewPreferences.Entry.DEFAULTS.snapToElements();
+    /**
+     * How close an edge has to come before it grabs, and how far away an element may be and still
+     * count as something the user is lining up with. Both in <em>screen</em> pixels: they are
+     * divided by the canvas zoom before use, so a snap feels the same size at any zoom.
+     */
+    @Getter @Setter
+    private float elementSnapThreshold = 7f;
+    @Getter @Setter
+    private float elementSnapRange = 600f;
+    /** Guides for the drag currently in progress, in canvas content coordinates. */
+    @Getter
+    private List<SnapGuide> snapGuides = List.of();
+    private final SnapGuideElement snapGuideElement = new SnapGuideElement(this);
+    /** Guards {@link #savePreferences()} while the remembered setup is being put back on. */
+    private boolean applyingPreferences = false;
+    /**
+     * How every wire in this view is routed. View-wide rather than per wire, like
+     * {@link #snapToGrid}: a graph with two wire styles in it reads as a rendering bug.
+     *
+     * <p>Not pushed to the wires — each {@link WireElement} notices the change on its next draw
+     * and rebuilds, which also covers wires created after the change.</p>
+     */
+    @Getter
+    private WireRouteStyle wireRouteStyle = GraphViewPreferences.Entry.DEFAULTS.wireStyle();
 
 
     public GraphView() {
-        this.graphView.getLayout().widthPercent(100).heightPercent(100);
-        this.panelLayer.getLayout().positionType(TaffyPosition.ABSOLUTE).width(0).height(0);
+        addClass("__node-graph-view__");
+
+        graphView.addClass("__node-graph-view_canvas-view__");
+        Style.defaultPipeline(this.graphView.getLayout(), l -> l.widthPercent(100).heightPercent(100));
+        Style.defaultPipeline(this.graphView.getGraphViewStyle(), s -> s.maxScale(2f));
+
+        panelLayer.addClass("__node-graph-view_panel-layer__");
+        Style.defaultPipeline(this.panelLayer.getLayout(), l -> l.positionType(TaffyPosition.ABSOLUTE).width(0).height(0));
+
         // header initial
-        header.layout(layout -> {
-            layout.widthPercent(100);
-            layout.height(16);
-            layout.paddingAll(1);
-            layout.flexDirection(FlexDirection.ROW);
-        });
-        header.style(style -> style.backgroundTexture(Sprites.RECT_SOLID));
         header.addClass("__ui-editor-view_header__");
+        Style.defaultPipeline(header.getLayout(), l -> l
+                .widthPercent(100)
+                .height(16)
+                .paddingAll(1)
+                .flexDirection(FlexDirection.ROW));
+        Style.defaultPipeline(header.getStyle(), s -> s.backgroundTexture(Sprites.RECT_SOLID));
         initHeaders();
 
         // canvas
-        canvas.getLayout().widthPercent(100).flex(1);
+        canvas.addClass("__node-graph-view_canvas__");
+        Style.defaultPipeline(canvas.getLayout(), l -> l.widthPercent(100).flex(1));
 
         graphView.addEventListener(UIEvents.MOUSE_DOWN, this::onGraphViewMouseDown);
         graphView.addEventListener(UIEvents.MOUSE_UP, this::onGraphViewMouseUp);
         graphView.addEventListener(UIEvents.DRAG_SOURCE_UPDATE, this::onGraphViewDragSourceUpdate);
         graphView.addEventListener(UIEvents.DRAG_END, this::onGraphViewDragEnd);
-        fallbackLayer.setId("fallback-layer");
+        graphView.addEventListener(UIEvents.DRAG_PERFORM, this::onGraphViewDragPerform);
+        fallbackLayer.addClass("__node-graph-view_fallback-layer__");
         fallbackLayer.setAllowHitTest(false);
-        fallbackLayer.getLayout().positionType(TaffyPosition.ABSOLUTE);
+        Style.defaultPipeline(fallbackLayer.getLayout(), l -> l.positionType(TaffyPosition.ABSOLUTE));
         graphView.addContentChild(fallbackLayer);
         setLayers(List.of(PlacematElement.PLACEMAT_LAYER, WireElement.WIRE_LAYER, NodeElement.NODE_LAYER, StickyNoteElement.STICKY_NOTE_LAYER));
         addEventListener(UIEvents.DRAG_SOURCE_UPDATE, this::onDragSourceUpdate);
@@ -144,59 +250,161 @@ public class GraphView extends UIElement {
 
         setEnforceFocus(Consumers.nop());
 
-        itemLibrary.setDisplay(false);
+        // ItemLibrary is hidden until explicitly shown — popup visibility is state-driven.
+        Style.importantPipeline(itemLibrary.getLayout(), l -> l.display(TaffyDisplay.NONE));
         inspector.setHistoryStack(historyStack);
 
         initPanels();
+        initGraphLogFooter();
 
-        addChildren(header, canvas.addChildren(graphView, panelLayer, itemLibrary));
+        addChildren(header, canvas.addChildren(graphView, panelLayer, graphLogFooter));
     }
 
 
     protected void initHeaders() {
-        header.addChildren(
-                // left
-                new UIElement().setId("header-left").layout(layout -> {
-                    layout.flexDirection(FlexDirection.ROW);
-                    layout.heightPercent(100);
-                    layout.flex(1);
-                }).addChildren(
-                        new Button().setText("Undo")
-                                .setOnClick(event -> historyStack.undo())
-                                .layout(layout -> layout.width(30))
-                                .style(style -> style.tooltips("Ctrl+Z")),
-                        new Button().setText("Redo")
-                                .setOnClick(event -> historyStack.redo())
-                                .layout(layout -> layout.width(30))
-                                .style(style -> style.tooltips("Ctrl+Y / Ctrl+Shift+Z"))
-                ),
-                // center
-                new UIElement().setId("header-center").layout(layout -> layout.heightPercent(100)),
-                // right
-                new UIElement().setId("header-right").layout(layout -> {
-                    layout.flexDirection(FlexDirection.ROW);
-                    layout.justifyContent(AlignContent.FLEX_END);
-                    layout.heightPercent(100);
-                    layout.flex(1);
-                }).addChildren(
-                        // page fit button
-                        new Button().noText().setOnClick(event -> fitGraphChildren())
-                                .layout(layout -> layout.width(14))
-                                .style(style -> style.tooltips("GraphView.fit")).addChild(
-                                        new UIElement().layout(layout -> {
-                                            layout.heightPercent(100);
-                                            layout.setAspectRatio(1);
-                                        }).style(style -> style.backgroundTexture(Icons.PAGE_FIT)))
-                )
-        );
+        // left section
+        var leftSection = new UIElement();
+        leftSection.addClass("__node-graph-view_header-left__");
+        Style.defaultPipeline(leftSection.getLayout(), l -> l.flexDirection(FlexDirection.ROW).heightPercent(100).flex(1));
+        var undoBtn = new Button();
+        undoBtn.setText("Undo").setOnClick(event -> historyStack.undo());
+        undoBtn.addClass("__node-graph-view_header-undo__");
+        Style.defaultPipeline(undoBtn.getLayout(), l -> l.width(30));
+        bindShortcutTooltip(undoBtn, EditorActions.UNDO, "Ctrl+Z");
+        var redoBtn = new Button();
+        redoBtn.setText("Redo").setOnClick(event -> historyStack.redo());
+        redoBtn.addClass("__node-graph-view_header-redo__");
+        Style.defaultPipeline(redoBtn.getLayout(), l -> l.width(30));
+        bindShortcutTooltip(redoBtn, EditorActions.REDO, "Ctrl+Y / Ctrl+Shift+Z");
+        leftSection.addChildren(undoBtn, redoBtn);
+
+        // center section
+        var centerSection = new UIElement();
+        centerSection.addClass("__node-graph-view_header-center__");
+        Style.defaultPipeline(centerSection.getLayout(), l -> l.heightPercent(100));
+
+        // right section
+        var rightSection = new UIElement();
+        rightSection.addClass("__node-graph-view_header-right__");
+        Style.defaultPipeline(rightSection.getLayout(), l -> l.flexDirection(FlexDirection.ROW)
+                .justifyContent(AlignContent.FLEX_END)
+                .gapAll(2)
+                .heightPercent(100)
+                .flex(1));
+        var snapToggle = new Toggle();
+        snapToggle.addClass("__node-graph-view_header-snap-toggle__");
+        snapToggle.noText()
+                .setOn(snapToGrid, false)
+                .setOnToggleChanged(this::setSnapToGrid)
+                .bindDataSource(SupplierDataSource.of(() -> snapToGrid));
+        Style.defaultPipeline(snapToggle.getToggleStyle(), style -> style.baseTexture(Sprites.BORDER1_RT1_DARK)
+                .hoverTexture(Sprites.BORDER1_RT1)
+                .markTexture(Icons.GRID)
+                .unmarkTexture(Icons.GRID));
+        Style.defaultPipeline(snapToggle.getLayout(), l -> l.width(14).heightPercent(100));
+        Style.defaultPipeline(snapToggle.getStyle(), s -> s.tooltips("graph.snap_to_grid"));
+        rightSection.addChild(snapToggle);
+
+        var alignToggle = new Toggle();
+        alignToggle.addClass("__node-graph-view_header-align-toggle__");
+        alignToggle.noText()
+                .setOn(snapToElements, false)
+                .setOnToggleChanged(this::setSnapToElements)
+                .bindDataSource(SupplierDataSource.of(() -> snapToElements));
+        Style.defaultPipeline(alignToggle.getToggleStyle(), style -> style.baseTexture(Sprites.BORDER1_RT1_DARK)
+                .hoverTexture(Sprites.BORDER1_RT1)
+                .markTexture(Icons.MAGNET)
+                .unmarkTexture(Icons.MAGNET));
+        Style.defaultPipeline(alignToggle.getLayout(), l -> l.width(14).heightPercent(100));
+        Style.defaultPipeline(alignToggle.getStyle(), s -> s.tooltips("graph.snap_to_elements"));
+        rightSection.addChild(alignToggle);
+
+        var fitBtn = new Button();
+        fitBtn.noText().setOnClick(event -> fitGraphChildren());
+        fitBtn.addClass("__node-graph-view_header-fit-button__");
+        Style.defaultPipeline(fitBtn.getLayout(), l -> l.width(14));
+        Style.defaultPipeline(fitBtn.getStyle(), s -> s.tooltips("GraphView.fit"));
+        var fitIcon = new UIElement().addClass("__white_icon__");
+        fitIcon.addClass("__node-graph-view_header-fit-icon__");
+        Style.defaultPipeline(fitIcon.getLayout(), l -> l.heightPercent(100).setAspectRatio(1));
+        Style.defaultPipeline(fitIcon.getStyle(), s -> s.backgroundTexture(Icons.PAGE_FIT));
+        fitBtn.addChild(fitIcon);
+        rightSection.addChild(fitBtn);
+
+        header.addChildren(leftSection, centerSection, rightSection);
     }
 
     protected void initPanels() {
-        panelLayer.addChildren(
-                new GraphPanel(this, blackboard),
-                new GraphPanel(this, inspector).layout(l -> l.left(100000)),
-                new GraphPanel(this, preview).layout(l -> l.left(100000).top(100000))
-        );
+        var bbPanel = new GraphPanel(this, blackboard);
+        var insPanel = new GraphPanel(this, inspector);
+        var prevPanel = new GraphPanel(this, preview);
+        Style.defaultPipeline(bbPanel.getLayout(), l -> l.width(160));
+        panelLayer.addChildren(bbPanel, insPanel, prevPanel);
+        dockManager.register(bbPanel, DockSlot.TOP_LEFT);
+        dockManager.register(insPanel, DockSlot.TOP_RIGHT);
+        dockManager.register(prevPanel, DockSlot.BOTTOM_RIGHT);
+    }
+
+    protected void initGraphLogFooter() {
+        graphLogFooter.addClass("__node-graph-view_log-footer__");
+        Style.defaultPipeline(graphLogFooter.getLayout(), l -> l
+                .positionType(TaffyPosition.ABSOLUTE)
+                .left(8)
+                .right(8)
+                .bottom(8)
+                .height(16)
+                .paddingAll(3)
+                .gapAll(2));
+        Style.defaultPipeline(graphLogFooter.getStyle(), s -> s.background(
+                new SDFRectTexture()
+                        .setRadius(4)
+                        .setStroke(0.5f)
+                        .setColor(0xCC1E1F22)
+                        .setBorderColor(0xAA7F8084)));
+        Style.importantPipeline(graphLogFooter.getLayout(), l -> l.display(TaffyDisplay.NONE));
+        graphLogFooter.addEventListener(UIEvents.MOUSE_DOWN, event -> {
+            if (!graphLogEntries.isEmpty()) {
+                setGraphLogExpanded(!graphLogExpanded);
+            }
+            event.stopPropagation();
+        });
+
+        graphLogHeader.addClass("__node-graph-view_log-header__");
+        Style.defaultPipeline(graphLogHeader.getLayout(), l -> l
+                .height(10)
+                .widthPercent(100)
+                .flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER)
+                .gapAll(4));
+
+        graphLogSummary.addClass("__node-graph-view_log-summary__");
+        graphLogSummary.setText(Component.empty());
+        Style.defaultPipeline(graphLogSummary.getLayout(), l -> l.flex(1).heightPercent(100));
+        Style.defaultPipeline(graphLogSummary.getTextStyle(), s -> s
+                .textAlignVertical(Vertical.CENTER)
+                .textWrap(TextWrap.HOVER_ROLL)
+                .textShadow(false));
+        Style.defaultPipeline(graphLogSummary.getStyle(), s -> s.overflowVisible(false));
+
+        graphLogCount.addClass("__node-graph-view_log-count__");
+        graphLogCount.setText(Component.empty());
+        Style.defaultPipeline(graphLogCount.getLayout(), l -> l.width(42).heightPercent(100));
+        Style.defaultPipeline(graphLogCount.getTextStyle(), s -> s
+                .textAlignVertical(Vertical.CENTER)
+                .textWrap(TextWrap.HIDE)
+                .textColor(ColorPattern.LIGHT_GRAY.color)
+                .textShadow(false));
+
+        graphLogList.addClass("__node-graph-view_log-list__");
+        Style.defaultPipeline(graphLogList.getLayout(), l -> l.widthPercent(100).flex(1));
+        graphLogList.scrollerStyle(style -> style
+                .mode(ScrollerMode.VERTICAL)
+                .horizontalScrollDisplay(ScrollDisplay.NEVER)
+                .verticalScrollDisplay(ScrollDisplay.AUTO));
+        Style.importantPipeline(graphLogList.getLayout(), l -> l.display(TaffyDisplay.NONE));
+
+        graphLogHeader.addChildren(graphLogSummary, graphLogCount);
+        graphLogFooter.addChildren(graphLogHeader, graphLogList);
     }
 
     /**
@@ -212,12 +420,20 @@ public class GraphView extends UIElement {
         layers.clear();
         for (var layerName : layerOrder) {
             var layer = new UIElement();
+            // setId is preserved here because getLayer() looks layers up by id-as-key, but we also
+            // expose an internal class so stylesheets can target each layer.
             layer.setId(layerName);
+            layer.addClass("__node-graph-view_layer__");
+            layer.addClass("__node-graph-view_layer-" + layerName.toLowerCase() + "__");
             layer.setAllowHitTest(false);
-            layer.getLayout().positionType(TaffyPosition.ABSOLUTE);
+            Style.defaultPipeline(layer.getLayout(), l -> l.positionType(TaffyPosition.ABSOLUTE));
             graphView.addContentChild(layer);
             layers.put(layerName, layer);
         }
+        // Guides belong over the content, and content children draw in the order they were added —
+        // so a layer set installed after construction would otherwise bury them.
+        snapGuideElement.removeSelf();
+        graphView.addContentChild(snapGuideElement);
         return this;
     }
 
@@ -242,11 +458,42 @@ public class GraphView extends UIElement {
      *              If {@code null}, the view will be cleared and no graph will be loaded.
      * @return the current {@code GraphView} instance to allow method chaining.
      */
+    /**
+     * Switches this view between authoring and viewing.
+     *
+     * <p>Set it <em>before</em> {@link #loadGraph}: the inline port editors are built as the UI tree is
+     * built and read the flag as they go, so flipping it afterwards leaves the ones already on screen
+     * editable until something else rebuilds them.</p>
+     *
+     * @see #readOnly
+     */
+    public GraphView setReadOnly(boolean readOnly) {
+        if (this.readOnly == readOnly) return this;
+        this.readOnly = readOnly;
+        // The two panels that author a graph rather than describe it. Left visible, because reading a
+        // built-in blueprint's variables and node options is the whole point of being able to open it —
+        // an inactive element still draws, it just stops taking input.
+        blackboard.setActive(!readOnly);
+        inspector.setActive(!readOnly);
+        header.select(".__node-graph-view_header-undo__").forEach(e -> e.setActive(!readOnly));
+        header.select(".__node-graph-view_header-redo__").forEach(e -> e.setActive(!readOnly));
+        return this;
+    }
+
     public GraphView loadGraph(@Nullable Graph graph) {
         clearGraph();
         this.graph = graph;
         if (this.graph == null) return this;
+        // Before anything is built: the wire style decides how every wire's geometry comes out, and
+        // adopting it afterwards would make the first frame show the old one.
+        applyPreferences(GraphViewPreferences.get(graph.getClass()));
         this.itemLibrary.onLoadGraph(graph.graphModel);
+        // Warm the supported-type probe here, on the thread that owns this graph. It is cached per
+        // graph class, so this costs nothing after the first graph of a type — but it decides WHICH
+        // thread pays for it, and the blackboard's type picker would otherwise be first, from its
+        // background search thread, building models in a graph this view is already ticking.
+        // See CustomGraphModelImpl.detectSupportedTypes.
+        graph.getSupportTypes();
         buildUITree(this.graph.graphModel);
         requireFitGraph = true;
         // Push initial snapshot so the first command can be undone
@@ -258,16 +505,23 @@ public class GraphView extends UIElement {
                         () -> { graph.graphModel.deserializeNBT(provider, initialTag); rebuildGraphUI(); },
                         () -> { graph.graphModel.deserializeNBT(provider, initialTag); rebuildGraphUI(); }
                 ), null, false);
+        refreshGraphLogger();
         return this;
     }
 
     public void clearGraph() {
-        this.graph = null;
         this.modelElements.clear();
         this.modelElementsByID.clear();
+        this.modelDependencies.clear();
         this.selected.clear();
         this.layers.values().forEach(UIElement::clearAllChildren);
         this.isWireDragging = false;
+        this.changeset.clear();
+        this.inspector.clear();
+        this.blackboard.clear();
+        this.graphLogEntries = List.of();
+        this.graphLogExpanded = false;
+        updateGraphLogFooter();
     }
 
     /**
@@ -276,16 +530,115 @@ public class GraphView extends UIElement {
      */
     public void rebuildGraphUI() {
         if (graph == null) return;
-        modelElements.clear();
-        modelElementsByID.clear();
-        modelDependencies.clear();
-        selected.clear();
-        layers.values().forEach(UIElement::clearAllChildren);
-        isWireDragging = false;
+        clearGraph();
         graph.graphModel.getCurrentGraphChangeDescription().clear();
-        changeset.clear();
-        inspector.clear();
         buildUITree(graph.graphModel);
+        refreshGraphLogger();
+    }
+
+    /**
+     * Manually reruns the graph diagnostic hook and refreshes the floating logger footer.
+     */
+    public void refreshGraphLogger() {
+        if (graph == null) {
+            graphLogEntries = List.of();
+            graphLogExpanded = false;
+            updateGraphLogFooter();
+            return;
+        }
+
+        var logger = new GraphLogger();
+        try {
+            graph.graphModel.onGraphChanged(logger);
+        } catch (RuntimeException e) {
+            LDLib2.LOGGER.error("Graph validation hook failed", e);
+            logger.error(Component.literal("Graph validation hook failed: " + e.getMessage()));
+        }
+        graphLogEntries = logger.getSortedEntries();
+        if (graphLogEntries.isEmpty()) {
+            graphLogExpanded = false;
+        }
+        updateGraphLogFooter();
+    }
+
+    protected void setGraphLogExpanded(boolean expanded) {
+        graphLogExpanded = expanded && !graphLogEntries.isEmpty();
+        updateGraphLogFooter();
+    }
+
+    protected void updateGraphLogFooter() {
+        graphLogList.clearAllScrollViewChildren();
+        if (graphLogEntries.isEmpty()) {
+            graphLogSummary.setText(Component.empty());
+            graphLogCount.setText(Component.empty());
+            Style.importantPipeline(graphLogFooter.getLayout(), l -> l.display(TaffyDisplay.NONE));
+            return;
+        }
+
+        var first = graphLogEntries.getFirst();
+        graphLogSummary.setText(formatGraphLogEntry(first));
+        Style.importantPipeline(graphLogSummary.getTextStyle(), s -> s.textColor(graphLogLevelColor(first.level())));
+        graphLogCount.setText(graphLogEntries.size() > 1
+                ? Component.translatable("graph.logger.count", graphLogEntries.size())
+                : Component.empty());
+
+        if (graphLogExpanded) {
+            for (var entry : graphLogEntries) {
+                graphLogList.addScrollViewChild(createGraphLogRow(entry));
+            }
+        }
+
+        Style.importantPipeline(graphLogFooter.getLayout(), l -> l
+                .display(TaffyDisplay.FLEX)
+                .height(graphLogExpanded ? 96 : 16));
+        Style.importantPipeline(graphLogList.getLayout(), l -> l
+                .display(graphLogExpanded ? TaffyDisplay.FLEX : TaffyDisplay.NONE));
+    }
+
+    protected UIElement createGraphLogRow(GraphLogger.Entry entry) {
+        var row = new UIElement();
+        row.addClass("__node-graph-view_log-row__");
+        Style.defaultPipeline(row.getLayout(), l -> l
+                .widthPercent(100)
+                .height(12)
+                .paddingAll(1)
+                .flexDirection(FlexDirection.ROW));
+
+        var label = new Label();
+        label.addClass("__node-graph-view_log-row-label__");
+        label.setText(formatGraphLogEntry(entry));
+        Style.defaultPipeline(label.getLayout(), l -> l.flex(1).heightPercent(100));
+        Style.defaultPipeline(label.getTextStyle(), s -> s
+                .textAlignVertical(Vertical.CENTER)
+                .textWrap(TextWrap.HOVER_ROLL)
+                .textColor(graphLogLevelColor(entry.level()))
+                .textShadow(false));
+        Style.defaultPipeline(label.getStyle(), s -> s.overflowVisible(false));
+        row.addChild(label);
+        return row;
+    }
+
+    protected Component formatGraphLogEntry(GraphLogger.Entry entry) {
+        return Component.literal("")
+                .append(graphLogLevelComponent(entry.level()))
+                .append(Component.literal(": "))
+                .append(entry.message());
+    }
+
+    protected Component graphLogLevelComponent(GraphLogger.Level level) {
+        return switch (level) {
+            case ERROR -> Component.translatable("graph.logger.level.error");
+            case WARNING -> Component.translatable("graph.logger.level.warning");
+            case INFO -> Component.translatable("graph.logger.level.info");
+        };
+    }
+
+    protected int graphLogLevelColor(GraphLogger.Level level) {
+        return switch (level) {
+            case ERROR -> ColorPattern.BRIGHT_RED.color;
+            case WARNING -> ColorPattern.YELLOW.color;
+            case INFO -> ColorPattern.LIGHT_BLUE.color;
+        };
     }
 
     public void fitGraphChildren() {
@@ -365,19 +718,29 @@ public class GraphView extends UIElement {
 //        ContentViewContainer.Add(m_MarkersParent);
 //        m_MarkersParent.Clear();
 
+        // nodes
         for (var nodeModel : graphModel.getNodeModels()) {
-            var nodeUI = createAndAddModelElement(nodeModel);
-            if (nodeUI != null) {
-                var previewModel = nodeModel.getNodePreviewModel();
-                if (previewModel != null) {
-                    createAndAddModelElement(previewModel);
-                }
-            }
+            // GraphModel.removeNode replaces the slot with null instead of compacting the list
+            // (so indices stay stable across edits) — same null-slot pattern as wireModels. Skip
+            // those gaps before touching the model.
+            if (nodeModel == null) continue;
+            // skip nodes that require container, e.g., BlockNodeModel
+            if (nodeModel.needsContainer()) continue;
+            // The preview panel is rendered inside the node element (see NodeElement#buildPreviewPart),
+            // so we don't register a separate top-level element for the preview model here.
+            createAndAddModelElement(nodeModel);
         }
 
         // sticky notes
         for (var stickyNoteModel : graphModel.getStickyNoteModels()) {
             createAndAddModelElement(stickyNoteModel);
+        }
+
+        // reroute points — before the wires, so a wire's first update already sees the dots it is
+        // routed through and hooks their LAYOUT changes. Otherwise a dot dragged straight after a
+        // graph rebuild would leave its wires behind.
+        for (var reroutePoint : graphModel.getWireReroutePointModels()) {
+            createAndAddModelElement(reroutePoint);
         }
 
         // wire
@@ -418,8 +781,34 @@ public class GraphView extends UIElement {
      */
     public boolean dispatchCommand(IGraphCommand command) {
         if (graph == null) return false;
-        command.execute(this, graph.graphModel);
+        if (readOnly) return false;
+        var graphModel = graph.graphModel;
+        // before-veto: the graph's own policy AND the optional instance interceptor must both allow.
+        if (!graphModel.canExecuteCommand(command)) return false;
+        if (commandInterceptor != null && !commandInterceptor.test(command)) return false;
+        command.execute(this, graphModel);
+        // post-execute: graph hook first, then registered listeners (copy to tolerate mutation).
+        graphModel.onCommandExecuted(command);
+        if (!commandListeners.isEmpty()) {
+            for (var listener : List.copyOf(commandListeners)) {
+                listener.onCommandExecuted(command, this, graphModel);
+            }
+        }
+        refreshGraphLogger();
         return true;
+    }
+
+    /** Registers an observer notified after each command executes. */
+    public GraphView addCommandListener(GraphCommandListener listener) {
+        if (listener != null && !commandListeners.contains(listener)) {
+            commandListeners.add(listener);
+        }
+        return this;
+    }
+
+    /** Removes a previously-registered command listener. */
+    public boolean removeCommandListener(GraphCommandListener listener) {
+        return commandListeners.remove(listener);
     }
 
     public boolean batchUpdate() {
@@ -526,47 +915,80 @@ public class GraphView extends UIElement {
         var model = element.getModel();
         element.setGraphView(this);
         layer.addChild(element);
-        if (element.isSelectable()) {
-            element.addEventListener(UIEvents.MOUSE_DOWN, event -> {
-                if (element.allowGraphMouseDown(event)) {
-                    var tagetWasSelected = isSelected(model);
-                    batchSelection(() -> {
-                        // select node
-                        if (!event.isCtrlDown() && !isSelected(model)) {
-                            clearAllSelected();
-                        }
-                        addSelected(model);
-                        moveElementTop(element);
-                    });
-
-                    // drag movable — include fully contained nodes when dragging a placemat
-                    var movablesList = new ArrayList<>(selected.stream().filter(m -> m instanceof IMovable).toList());
-                    for (var sel : new ArrayList<>(movablesList)) {
-                        if (sel instanceof PlacematModel pm) {
-                            java.util.function.Function<com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.AbstractNodeModel, Vector2f> sizeLookup = node -> {
-                                var nodeEl = getModelElement(node);
-                                return nodeEl != null ? new Vector2f(nodeEl.getSizeWidth(), nodeEl.getSizeHeight()) : null;
-                            };
-                            for (var contained : pm.getContainedNodes(sizeLookup)) {
-                                if (contained instanceof IMovable && !movablesList.contains(contained)) {
-                                    movablesList.add(contained);
-                                }
-                            }
-                        }
-                    }
-                    var movables = List.copyOf(movablesList);
-                    if (movables.isEmpty()) return;
-                    var width = 12;
-                    var height = 12;
-                    startDrag(new DragMove(tagetWasSelected, model, movables), Icons.MOVE).setDragTexture(- width / 2f, -height / 2f, width, height);
-                }
-            }, element.isGraphMouseDownCaptured());
-        }
+        wireSelectableElement(element);
         if (model instanceof IMovable movable) {
-            // position
-            element.getLayout().positionType(TaffyPosition.ABSOLUTE).left(movable.getPosition().x).top(movable.getPosition().y);
+            // position is driven by the model — pin via IMPORTANT.
+            Style.importantPipeline(element.getLayout(), l -> l.positionType(TaffyPosition.ABSOLUTE)
+                    .left(movable.getPosition().x)
+                    .top(movable.getPosition().y));
         }
         return true;
+    }
+
+    /**
+     * Wires MOUSE_DOWN selection + drag-to-move for a {@link ModelElement}. Called automatically
+     * by {@link #addElement} for top-level graph elements; nested elements (e.g. block nodes
+     * inside a context) must call it explicitly because they are not added to a layer.
+     */
+    public void wireSelectableElement(@Nullable ModelElement element) {
+        if (element == null || !element.isSelectable() || element.getModel() == null) return;
+        // Elements can opt out of the body-wide handler and wire their own drag handle instead
+        // (e.g. PlacematElement drags only via its title bar and lets body clicks region-select).
+        if (!element.wantsDefaultMouseWiring()) return;
+        element.addEventListener(UIEvents.MOUSE_DOWN, event -> onGraphElementMouseDown(element, event),
+                element.isGraphMouseDownCaptured());
+    }
+
+    /**
+     * Handles a {@code MOUSE_DOWN} on a graph element: updates selection (respecting Ctrl for
+     * additive selection) and starts a {@link DragMove} for all selected movables. Extracted from
+     * {@link #wireSelectableElement} so opted-out elements (e.g. a placemat's title bar) can reuse the
+     * exact same select + drag behavior from their own handle sub-element.
+     */
+    public void onGraphElementMouseDown(ModelElement element, UIEvent event) {
+        var model = element.getModel();
+        if (model == null || !element.allowGraphMouseDown(event)) return;
+        var tagetWasSelected = isSelected(model);
+        batchSelection(() -> {
+            // select node
+            if (!event.isCtrlDown() && !isSelected(model)) {
+                clearAllSelected();
+            }
+            addSelected(model);
+            moveElementTop(element);
+        });
+
+        // A drag only ever *looks* like it moved something: the element's position is pinned while
+        // dragging and the model is written by the MoveElementsCommand at drag end, which read-only
+        // refuses — so the node would snap back. Selection above still works, so a read-only graph can
+        // be clicked through and inspected.
+        if (readOnly) return;
+
+        // drag movable — include fully contained nodes when dragging a placemat. Filter
+        // by the MOVABLE capability so non-movable nodes (e.g. BlockNodeModel) don't
+        // start a DragMove that would preempt their own drag-reorder handlers.
+        var movablesList = new ArrayList<>(selected.stream()
+                .filter(m -> m instanceof IMovable
+                        && (!(m instanceof GraphElementModel gem) || gem.isMovable()))
+                .toList());
+        for (var sel : new ArrayList<>(movablesList)) {
+            if (sel instanceof PlacematModel pm) {
+                java.util.function.Function<com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.AbstractNodeModel, Vector2f> sizeLookup = node -> {
+                    var nodeEl = getModelElement(node);
+                    return nodeEl != null ? new Vector2f(nodeEl.getSizeWidth(), nodeEl.getSizeHeight()) : null;
+                };
+                for (var contained : pm.getContainedNodes(sizeLookup)) {
+                    if (contained != null && !movablesList.contains(contained)) {
+                        movablesList.add(contained);
+                    }
+                }
+            }
+        }
+        var movables = List.copyOf(movablesList);
+        if (movables.isEmpty()) return;
+        var width = 12;
+        var height = 12;
+        startDrag(new DragMove(tagetWasSelected, model, movables), Icons.MOVE).setDragTexture(- width / 2f, -height / 2f, width, height);
     }
 
     /**
@@ -760,24 +1182,188 @@ public class GraphView extends UIElement {
         return !isMenuOpen && super.isSelfOrChildHover();
     }
 
+    // region view preferences
+
+    public void setSnapToGrid(boolean value) {
+        if (snapToGrid == value) return;
+        snapToGrid = value;
+        savePreferences();
+    }
+
+    public void setGridSnapSize(float value) {
+        if (gridSnapSize == value) return;
+        gridSnapSize = value;
+        savePreferences();
+    }
+
+    public void setSnapToElements(boolean value) {
+        if (snapToElements == value) return;
+        snapToElements = value;
+        savePreferences();
+    }
+
+    public void setWireRouteStyle(WireRouteStyle value) {
+        if (wireRouteStyle == value) return;
+        wireRouteStyle = value;
+        savePreferences();
+    }
+
+    public GraphViewPreferences.Entry currentPreferences() {
+        return new GraphViewPreferences.Entry(snapToGrid, gridSnapSize, snapToElements, wireRouteStyle);
+    }
+
+    /**
+     * Adopts a remembered setup without writing it back — restoring what is already on disk is not
+     * a change, and treating it as one would rewrite the file on every editor open.
+     */
+    public void applyPreferences(GraphViewPreferences.Entry entry) {
+        applyingPreferences = true;
+        try {
+            setSnapToGrid(entry.snapToGrid());
+            setGridSnapSize(entry.gridSnapSize());
+            setSnapToElements(entry.snapToElements());
+            setWireRouteStyle(entry.wireStyle());
+        } finally {
+            applyingPreferences = false;
+        }
+    }
+
+    /**
+     * No-op without a graph: there is nothing to file the setup under, and a view that never gets
+     * one — a preview, a widget host — has no preferences worth keeping.
+     */
+    protected void savePreferences() {
+        if (applyingPreferences || graph == null) return;
+        GraphViewPreferences.put(graph.getClass(), currentPreferences());
+    }
+
+    // endregion
+
+    /**
+     * Rounds a single canvas-local point to the snap grid. Returns the input unchanged when snap is
+     * disabled. Returns a new {@link Vector2f}; the input is not mutated.
+     *
+     * <p>For a <em>point</em> — where a new node lands, where a reroute point is inserted — the
+     * corner is all there is, so this stays plain grid rounding. Moving an existing element goes
+     * through {@link #resolveDragOffset} instead, which knows how big it is and can line its far
+     * edge up as readily as its near one.</p>
+     */
+    public Vector2f snapPosition(Vector2f pos) {
+        if (!snapToGrid || gridSnapSize <= 0) return new Vector2f(pos);
+        return new Vector2f(
+                Math.round(pos.x / gridSnapSize) * gridSnapSize,
+                Math.round(pos.y / gridSnapSize) * gridSnapSize);
+    }
+
+    /**
+     * Turns the raw offset a drag has travelled into the one it should actually be committed at,
+     * and records the guides to draw for it.
+     *
+     * <p>One offset for the whole selection, not one per element: snapping each element on its own
+     * pulls them towards different grid lines and quietly changes the distances between them, so
+     * dragging a tidy row of nodes used to un-tidy it.</p>
+     *
+     * @param suppressed the user is holding the override modifier, so place it exactly where the
+     *                   cursor is — the escape hatch every editor with snapping needs
+     * @return a new offset; {@link #getSnapGuides()} is updated as a side effect
+     */
+    public Vector2f resolveDragOffset(Collection<Model> movables, Vector2f rawOffset, boolean suppressed) {
+        var moving = suppressed ? null : unionContentRect(movables, rawOffset);
+        if (moving == null) {
+            snapGuides = List.of();
+            return new Vector2f(rawOffset);
+        }
+        var result = SnapEngine.snap(moving, collectSnapTargets(movables), snapSettings());
+        snapGuides = result.guides();
+        return new Vector2f(rawOffset.x + result.offsetX(), rawOffset.y + result.offsetY());
+    }
+
+    public void clearSnapGuides() {
+        snapGuides = List.of();
+    }
+
+    /** Snap distances are authored in screen pixels; the canvas zoom converts them to content units. */
+    protected SnapSettings snapSettings() {
+        var scale = Math.max(0.01f, graphView.getScale());
+        return new SnapSettings(snapToGrid, gridSnapSize, snapToElements,
+                elementSnapThreshold / scale, elementSnapRange / scale);
+    }
+
+    /** {@code null} when nothing being dragged has a rectangle yet. */
+    protected @Nullable Vector4f unionContentRect(Collection<Model> movables, Vector2f offset) {
+        float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE;
+        float maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
+        var found = false;
+        for (var model : movables) {
+            var rect = contentRectOf(model);
+            if (rect == null) continue;
+            found = true;
+            minX = Math.min(minX, rect.x);
+            minY = Math.min(minY, rect.y);
+            maxX = Math.max(maxX, rect.x + rect.z);
+            maxY = Math.max(maxY, rect.y + rect.w);
+        }
+        if (!found) return null;
+        return new Vector4f(minX + offset.x, minY + offset.y, maxX - minX, maxY - minY);
+    }
+
+    /**
+     * Everything a drag may line up with: the placed elements that are not themselves being moved.
+     *
+     * <p>Wires and reroute points are left out on purpose — a wire has no meaningful edge, and a
+     * reroute dot is small enough that snapping to it would read as jitter rather than as
+     * alignment.</p>
+     */
+    protected List<Vector4f> collectSnapTargets(Collection<Model> movables) {
+        if (!snapToElements) return List.of();
+        var moving = Collections.newSetFromMap(new IdentityHashMap<Model, Boolean>());
+        moving.addAll(movables);
+        var targets = new ArrayList<Vector4f>();
+        for (var model : modelElements.keySet()) {
+            if (moving.contains(model)) continue;
+            if (!(model instanceof AbstractNodeModel || model instanceof PlacematModel
+                    || model instanceof com.lowdragmc.lowdraglib2.nodegraphtookit.model.wiget.StickyNoteModel)) {
+                continue;
+            }
+            var rect = contentRectOf(model);
+            if (rect != null) targets.add(rect);
+        }
+        return targets;
+    }
+
+    /**
+     * An element's rectangle in canvas content coordinates: the model's position — which is stable
+     * while something else is mid-drag — paired with the size its UI actually measured.
+     */
+    public @Nullable Vector4f contentRectOf(@Nullable Model model) {
+        if (!(model instanceof IMovable movable)) return null;
+        var element = modelElements.get(model);
+        if (element == null) return null;
+        var position = movable.getPosition();
+        return new Vector4f(position.x, position.y,
+                Math.max(0f, element.getSizeWidth()), Math.max(0f, element.getSizeHeight()));
+    }
+
     protected void onDragSourceUpdate(UIEvent event) {
         if (event.dragHandler.draggingObject instanceof DragMove dragMove) {
             var offset = new Vector2f(event.x - event.dragStartX, event.y - event.dragStartY);
             if (offset.lengthSquared() < 1f) {
+                clearSnapGuides();
                 for (var model : dragMove.movables) {
                     var ele = modelElements.get(model);
                     if (ele != null && model instanceof IMovable movable) {
-                        ele.getLayout().left(movable.getPosition().x).top(movable.getPosition().y);
+                        Style.importantPipeline(ele.getLayout(), l -> l.left(movable.getPosition().x).top(movable.getPosition().y));
                     }
                 }
                 return;
             }
             var localOffset = getContentViewContainer().getLocalMouseNormal(offset.x, offset.y);
+            var snapped = resolveDragOffset(dragMove.movables, localOffset, event.isAltDown());
             for (var model : dragMove.movables) {
                 var ele = modelElements.get(model);
                 if (ele != null && model instanceof IMovable movable) {
-                    var newPos = localOffset.add(movable.getPosition(), new Vector2f());
-                    ele.getLayout().left(newPos.x).top(newPos.y);
+                    var newPos = snapped.add(movable.getPosition(), new Vector2f());
+                    Style.importantPipeline(ele.getLayout(), l -> l.left(newPos.x).top(newPos.y));
                 }
             }
         }
@@ -786,6 +1372,7 @@ public class GraphView extends UIElement {
     protected void onDragEnd(UIEvent event) {
         if (event.dragHandler.draggingObject instanceof DragMove(var targetWasSelected, var target, var movables)) {
             var offset = new Vector2f(event.x - event.dragStartX, event.y - event.dragStartY);
+            clearSnapGuides();
             if (offset.lengthSquared() < 1f) {
                 // too less drag, back to click
                 batchSelection(() -> {
@@ -799,26 +1386,61 @@ public class GraphView extends UIElement {
                 return;
             }
             var localOffset = getContentViewContainer().getLocalMouseNormal(offset.x, offset.y);
-            dispatchCommand(new GraphCommands.MoveElementsCommand(new ArrayList<>(movables), localOffset));
+            // Snapped here rather than inside the command: the drag preview the user has been
+            // watching was drawn from this same offset, and re-deriving it per element inside the
+            // command is what used to let the drop land somewhere the preview never showed.
+            var snapped = resolveDragOffset(movables, localOffset, event.isAltDown());
+            clearSnapGuides();
+            dispatchCommand(new GraphCommands.MoveElementsCommand(new ArrayList<>(movables), snapped));
         }
+    }
+
+    /**
+     * Shows the chord this button's action currently answers to, resolved when the tooltip is about to
+     * be shown rather than written into the button once.
+     *
+     * <p>Inside an editor that is whatever the user's keymap says, which may not be the default any
+     * more; outside one there is no keymap and the UI's built-in chord still applies, which is what
+     * {@code fallback} is.
+     */
+    protected void bindShortcutTooltip(UIElement button, ResourceLocation actionId, String fallback) {
+        button.addEventListener(UIEvents.MOUSE_ENTER, event -> {
+            var tooltip = Keymaps.shortcutTooltip(button, actionId, fallback);
+            button.style(style -> style.tooltips(tooltip));
+        }, true);
     }
 
     protected void onKeyDown(UIEvent event) {
         if (this.isFocused() || panelLayer.getChildren().stream().anyMatch(UIElement::isFocused)) {
             switch (event.keyCode) {
-                case GLFW.GLFW_KEY_DELETE -> deleteSelectedElements();
+                case GLFW.GLFW_KEY_DELETE -> {
+                    if (readOnly) event.hasHandler = false;
+                    else deleteSelectedElements();
+                }
+                default -> event.hasHandler = false;
             }
+        } else {
+            event.hasHandler = false;
         }
     }
 
     protected void onValidateCommand(UIEvent event) {
+        // Copy is the one that still means something read-only: it takes a snapshot out of the graph
+        // rather than putting anything into it, which is exactly how you fork a built-in blueprint.
+        if (readOnly) {
+            if (CommandEvents.COPY.equals(event.command)) {
+                event.stopPropagation();
+            }
+            return;
+        }
         if (
                 CommandEvents.UNDO.equals(event.command) ||
                 CommandEvents.REDO.equals(event.command) ||
                 CommandEvents.COPY.equals(event.command) ||
                 CommandEvents.CUT.equals(event.command) ||
                 CommandEvents.DUPLICATE.equals(event.command) ||
-                CommandEvents.PASTE.equals(event.command)
+                CommandEvents.PASTE.equals(event.command) ||
+                CommandEvents.SAVE.equals(event.command)
         ) {
             event.stopPropagation();
         }
@@ -826,6 +1448,12 @@ public class GraphView extends UIElement {
 
 
     protected void onExecuteCommand(UIEvent event) {
+        if (readOnly) {
+            if (CommandEvents.COPY.equals(event.command)) {
+                copySelectedElements();
+            }
+            return;
+        }
         if (CommandEvents.REDO.equals(event.command)) {
             historyStack.redo();
         } else if (CommandEvents.UNDO.equals(event.command)) {
@@ -838,6 +1466,9 @@ public class GraphView extends UIElement {
             duplicateSelectedElements();
         } else if (CommandEvents.PASTE.equals(event.command)) {
             pasteElements();
+        } else if (CommandEvents.SAVE.equals(event.command)) {
+            var editorView = getFirstAncestorOfType(GraphEditorView.class);
+            if (editorView != null) editorView.notifySaved();
         }
     }
 
@@ -853,15 +1484,19 @@ public class GraphView extends UIElement {
             if (event.bubbleListeners.size() == 1) {
                 // clear selection if click on empty space
                 clearAllSelected();
-                // start drag selection
+                // start drag selection — transient drag-rect feedback, pinned via IMPORTANT.
                 var selectionRect = new UIElement();
-                selectionRect.getLayout().positionType(TaffyPosition.ABSOLUTE)
+                selectionRect.addClass("__node-graph-view_drag-selection__");
+                // Pure visual overlay: it must not intercept hover/hit-test from the elements it
+                // sweeps over, otherwise their hover highlights flicker as the rect grows.
+                selectionRect.setAllowHitTest(false);
+                Style.importantPipeline(selectionRect.getLayout(), l -> l.positionType(TaffyPosition.ABSOLUTE)
                         .width(0)
-                        .height(0);
-                selectionRect.getStyle().background(new SDFRectTexture().setStroke(0.5f)
+                        .height(0));
+                Style.importantPipeline(selectionRect.getStyle(), s -> s.background(new SDFRectTexture().setStroke(0.5f)
                         .setColor(ColorPattern.T_LIGHT_BLUE.color)
                         .setBorderColor(ColorPattern.LIGHT_BLUE.color)
-                );
+                ));
                 graphView.startDrag(new DragRegionSelection(selectionRect), null);
                 graphView.addChild(selectionRect);
             }
@@ -878,14 +1513,13 @@ public class GraphView extends UIElement {
                 if (menu.isEmpty()) return;
                 isMenuOpen = true;
                 var layoutOffset = mui.ui.rootElement.worldToLocalLayoutOffset(new Vector2f(event.x, event.y));
-                mui.ui.rootElement.addChildren(new Menu<>(menu.build(), TreeBuilder.Menu::uiProvider)
+                var contextMenu = new Menu<>(menu.build(), TreeBuilder.Menu::uiProvider)
                         .setHoverTextureProvider(TreeBuilder.Menu::hoverTextureProvider)
                         .setOnNodeClicked(TreeBuilder.Menu::handle)
-                        .setOnClose(() -> isMenuOpen = false)
-                        .layout(layout -> {
-                            layout.left(layoutOffset.x);
-                            layout.top(layoutOffset.y);
-                        }));
+                        .setOnClose(() -> isMenuOpen = false);
+                contextMenu.addClass("__node-graph-view_context-menu__");
+                Style.importantPipeline(contextMenu.getLayout(), l -> l.left(layoutOffset.x).top(layoutOffset.y));
+                mui.ui.rootElement.addChild(contextMenu);
             }
         }
     }
@@ -898,11 +1532,14 @@ public class GraphView extends UIElement {
             var width = Math.abs(event.dragStartX - event.x);
             var height = Math.abs(event.dragStartY - event.y);
             var localSize = graphView.getLocalMouseNormal(width, height);
-            selectionRect.getLayout()
-                    .left(localMouse.x - graphView.getContentX())
-                    .top(localMouse.y - graphView.getContentY())
+            // Live drag-rect geometry — data-driven.
+            float rectLeft = localMouse.x - graphView.getContentX();
+            float rectTop = localMouse.y - graphView.getContentY();
+            Style.importantPipeline(selectionRect.getLayout(), l -> l
+                    .left(rectLeft)
+                    .top(rectTop)
                     .width(localSize.x)
-                    .height(localSize.y);
+                    .height(localSize.y));
             var localGraphMouse = getContentViewContainer().getLocalMouse(minX, minY);
             var localGraphSize = getContentViewContainer().getLocalMouseNormal(width, height);
             dragRegionSelection = new Vector4f(localGraphMouse.x, localGraphMouse.y, localGraphSize.x, localGraphSize.y);
@@ -928,9 +1565,90 @@ public class GraphView extends UIElement {
         }
     }
 
+    protected void onGraphViewDragPerform(UIEvent event) {
+        if (!(event.dragHandler.getDraggingObject() instanceof GraphResourceProviderContainer.DraggingGraph draggingGraph)
+                || graph == null || !graph.graphModel.allowSubgraphCreation()
+                || !graphView.isMouseOverContent(event.x, event.y)) {
+            return;
+        }
+
+        // Reject self-import: the dragged resource is the same file this editor is currently
+        // showing at its root. Anything looser (e.g. a parent file referenced from a child) would
+        // require traversing the open editor topology, which is out of scope for v1.
+        var editorView = getFirstAncestorOfType(GraphEditorView.class);
+        if (editorView != null && editorView.getRootPath() != null
+                && editorView.getRootPath().equals(draggingGraph.path())) {
+            LDLib2.LOGGER.warn("Rejected subgraph import: cannot import a graph into itself ({}).",
+                    draggingGraph.path());
+            return;
+        }
+
+        // Cross-GraphResource imports are allowed only when the host graph opts in via
+        // acceptsSubgraphGraph. GraphResource instances are singletons binding a node-class registry
+        // and path scheme, so by default (acceptsSubgraphGraph == false) different resources stay
+        // non-interchangeable; a graph that wants cross-type subgraphs overrides the method.
+        var resolver = graph.graphModel.getReferenceResolver();
+        var hostResource = resolver == null ? null : resolver.getSourceResource();
+        if (hostResource != null && hostResource != draggingGraph.graphResource()) {
+            var draggedGraph = draggingGraph.graphResource().createGraph();
+            if (!graph.acceptsSubgraphGraph(draggedGraph)) {
+                LDLib2.LOGGER.warn(
+                        "Rejected subgraph import: host graph {} does not accept subgraph type {}.",
+                        graph.getClass().getName(), draggedGraph.getClass().getName());
+                return;
+            }
+        }
+
+        // Validated — dispatch the actual import.
+        var localPosition = snapPosition(
+                getContentViewContainer().worldToLocalLayoutOffset(new Vector2f(event.x, event.y)));
+        dispatchCommand(new ImportExternalSubgraphCommand(draggingGraph.path(), localPosition));
+    }
+
+    /**
+     * Adds an "Add Subgraph" submenu listing every loaded {@link com.lowdragmc.lowdraglib2.nodegraphtookit.editor.GraphResource} whose graph type is
+     * accepted by this host graph via {@link com.lowdragmc.lowdraglib2.nodegraphtookit.api.graph.Graph#acceptsSubgraphGraph}.
+     * Selecting one creates an empty inline local subgraph of that foreign type plus a node bound to
+     * it (via {@link CreateForeignLocalSubgraphCommand}). No-op when the host disallows subgraphs or
+     * accepts no foreign types.
+     */
+    private void appendForeignSubgraphMenu(TreeBuilder.Menu menuBuilder, Vector2f localPosition) {
+        if (graph == null || !graph.graphModel.allowSubgraphCreation()) return;
+        var editor = getFirstAncestorOfType(com.lowdragmc.lowdraglib2.editor.ui.Editor.class);
+        if (editor == null) return;
+
+        // (display name, graph type), deduped by graph class.
+        var seen = new java.util.HashSet<Class<?>>();
+        var compatible = new java.util.ArrayList<com.lowdragmc.lowdraglib2.nodegraphtookit.editor.GraphResource<?>>();
+        for (var entry : editor.resourceView.getResources().entrySet()) {
+            if (!(entry.getKey() instanceof com.lowdragmc.lowdraglib2.nodegraphtookit.editor.GraphResource<?> resource)) continue;
+            var sample = resource.createGraph();
+            if (sample.getClass() == graph.getClass()) continue; // same-type handled elsewhere
+            if (!graph.acceptsSubgraphGraph(sample)) continue;
+            if (seen.add(sample.getClass())) compatible.add(resource);
+        }
+        if (compatible.isEmpty()) return;
+
+        menuBuilder.branch("graph.commands.create_foreign_local_subgraph", branch -> {
+            for (var resource : compatible) {
+                Class<? extends com.lowdragmc.lowdraglib2.nodegraphtookit.api.graph.Graph> type = resource.createGraph().getClass();
+                var name = resource.getName();
+                branch.leaf(resource.getDisplayName(), () ->
+                        dispatchCommand(new CreateForeignLocalSubgraphCommand(type, name, localPosition)));
+            }
+        });
+    }
+
     protected TreeBuilder.Menu createMenu(float mouseX, float mouseY) {
         var menuBuilder = TreeBuilder.Menu.start();
-        var localPosition = getContentViewContainer().getLocalMouse(mouseX, mouseY);
+        // Read-only: every entry below either creates or edits something, and dispatchCommand refuses
+        // all of it. An empty menu is not opened at all (see onGraphViewMouseUp), so right-click stays
+        // pure panning instead of popping up a list of things that silently do nothing.
+        if (readOnly) return menuBuilder;
+        // Newly-created elements align to the snap grid the same way drag-moved ones do, so the
+        // canvas stays grid-consistent regardless of how the user adds content.
+        var localPosition = snapPosition(
+                getContentViewContainer().worldToLocalLayoutOffset(new Vector2f(mouseX, mouseY)));
 
         // "Add Node" is always available
         menuBuilder.leaf("graph.commands.add_node", () -> {
@@ -941,6 +1659,10 @@ public class GraphView extends UIElement {
             });
         });
 
+        // "Add Subgraph (<type>)" for each cross-type graph this graph accepts — creates an inline
+        // local subgraph of that foreign type so the new node IS a subgraph of another graph type.
+        appendForeignSubgraphMenu(menuBuilder, localPosition);
+
         // "Create Sticky Note" is always available
         menuBuilder.leaf(ContextualMenuHelpers.CREATE_STICKY_NOTE_ITEM.getName(), () ->
                 dispatchCommand(new GraphCommands.CreateStickyNoteCommand(localPosition))
@@ -950,6 +1672,12 @@ public class GraphView extends UIElement {
         menuBuilder.leaf(ContextualMenuHelpers.CREATE_PLACEMAT_ITEM.getName(), () ->
                 createPlacematFromSelection(localPosition)
         );
+
+        menuBuilder.crossLine();
+        // Both are available with an empty selection: auto layout then arranges the whole graph,
+        // and wire style was never about the selection to begin with.
+        appendAutoLayoutMenu(menuBuilder);
+        appendWireStyleMenu(menuBuilder);
 
         if (getSelected().isEmpty()) return menuBuilder;
 
@@ -975,10 +1703,80 @@ public class GraphView extends UIElement {
 
         // Wire-specific items (only when all selected are wires)
         if (selectedModels.stream().allMatch(WireModel.class::isInstance)) {
-            appendWireMenuItems(menuBuilder, selectedModels);
+            appendWireMenuItems(menuBuilder, selectedModels, localPosition);
         }
 
+        // Context/Block items
+        appendContextBlockMenuItems(menuBuilder, selectedModels, mouseX, mouseY);
+
         return menuBuilder;
+    }
+
+    /** Operates on the selection, or on the whole graph when nothing is selected. */
+    private void appendAutoLayoutMenu(TreeBuilder.Menu menuBuilder) {
+        if (graph == null) return;
+        var selection = getSelected().stream()
+                .filter(GraphElementModel.class::isInstance)
+                .map(GraphElementModel.class::cast)
+                .toList();
+        menuBuilder.branch("graph.auto_layout", branch -> {
+            for (var algorithm : GraphLayoutAlgorithm.values()) {
+                branch.leaf(algorithm.getTranslationKey(), () ->
+                        dispatchCommand(new LayoutCommands.AutoLayoutCommand(selection, algorithm)));
+            }
+        });
+    }
+
+    private void appendWireStyleMenu(TreeBuilder.Menu menuBuilder) {
+        menuBuilder.branch("graph.wire_style", branch -> {
+            for (var style : WireRouteStyle.values()) {
+                var icon = style == wireRouteStyle ? Icons.CHECK : IGuiTexture.EMPTY;
+                branch.leaf(icon, style.getTranslationKey(), () -> setWireRouteStyle(style));
+            }
+        });
+    }
+
+    /**
+     * Appends "Add Block" (when a single ContextNodeModel is selected) and
+     * "Delete Block" / "Move Up" / "Move Down" (when only sibling BlockNodeModels are selected).
+     */
+    private void appendContextBlockMenuItems(com.lowdragmc.lowdraglib2.gui.util.TreeBuilder.Menu menuBuilder,
+                                             List<GraphElementModel> selectedModels,
+                                             float mouseX, float mouseY) {
+        // Add Block: shown when the selection is a single context node with at least one
+        // compatible block type. Opens the ItemLibrary in block-only mode targeting this context.
+        if (selectedModels.size() == 1
+                && selectedModels.get(0) instanceof com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.ContextNodeModel ctxModel) {
+            var supported = ctxModel.getSupportBlockClasses();
+            if (!supported.isEmpty()) {
+                menuBuilder.leaf("graph.add_block", () ->
+                        itemLibrary.showBlocksForContext(mouseX, mouseY, ctxModel, item -> {
+                            if (item instanceof com.lowdragmc.lowdraglib2.nodegraphtookit.gui.itemlibrary.BlockLibraryItem blockItem) {
+                                dispatchCommand(new com.lowdragmc.lowdraglib2.nodegraphtookit.gui.command.BlockCommands.InsertBlockCommand(
+                                        ctxModel, blockItem.getBlockClass(), -1));
+                            }
+                        }));
+            }
+        }
+
+        // Block-only single-selection: offer Move Up / Move Down. (Standard "Delete" already
+        // routes through removeBlock via GraphModel.removeElements, and the standard menu items
+        // — Copy/Cut/Duplicate/Delete — are emitted by the common-items path above.)
+        if (selectedModels.size() == 1
+                && selectedModels.get(0) instanceof com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.BlockNodeModel block) {
+            var parent = block.getContextNodeModel();
+            if (parent != null) {
+                int idx = parent.indexOf(block);
+                if (idx > 0) {
+                    menuBuilder.leaf("graph.move_block_up", () -> dispatchCommand(
+                            new com.lowdragmc.lowdraglib2.nodegraphtookit.gui.command.BlockCommands.MoveBlockCommand(parent, idx, idx - 1)));
+                }
+                if (idx >= 0 && idx < parent.getBlockCount() - 1) {
+                    menuBuilder.leaf("graph.move_block_down", () -> dispatchCommand(
+                            new com.lowdragmc.lowdraglib2.nodegraphtookit.gui.command.BlockCommands.MoveBlockCommand(parent, idx, idx + 1)));
+                }
+            }
+        }
     }
 
     /** Gets the intersection of menu items from all selected models, sorted by priority. */
@@ -995,45 +1793,78 @@ public class GraphView extends UIElement {
     /** Binds a runtime action to a menu item. Returns null if the item is not available. */
     private @Nullable ContextualMenuItem bindMenuItemAction(ContextualMenuItem item,
             List<GraphElementModel> selectedModels, Vector2f localPosition) {
+        // Case strings match the translation keys stored in ContextualMenuHelpers — keep them in
+        // sync if you rename either side.
         return switch (item.getName()) {
-            case "Delete" -> {
+            case "graph.delete" -> {
                 if (selectedModels.stream().allMatch(GraphElementModel::isDeletable))
                     yield item.withAction(this::deleteSelectedElements);
                 yield null;
             }
-            case "Frame Selection" -> item.withAction(this::fitGraphChildren);
-            case "Cut" -> {
+            case "graph.frame_selection" -> item.withAction(this::fitGraphChildren);
+            case "graph.cut" -> {
                 if (selectedModels.stream().allMatch(m -> m.isDeletable() && m.isCopiable()))
                     yield item.withAction(this::cutSelectedElements);
                 yield null;
             }
-            case "Copy" -> {
+            case "graph.copy" -> {
                 if (selectedModels.stream().allMatch(GraphElementModel::isCopiable))
                     yield item.withAction(this::copySelectedElements);
                 yield null;
             }
-            case "Paste" -> {
+            case "graph.paste" -> {
                 if (clipboardData != null)
-                    yield item.withAction(this::pasteElements);
+                    yield item.withAction(() -> pasteElementsAt(localPosition));
                 yield null;
             }
-            case "Paste as New" -> null; // TODO
-            case "Rename" -> null; // TODO
-            case "Duplicate" -> {
+            case "graph.paste_as_new" -> null; // TODO
+            case "graph.rename" -> {
+                if (selectedModels.size() == 1) {
+                    var only = selectedModels.get(0);
+                    if (only.isRenamable() && only instanceof IHasName) {
+                        yield item.withAction(() -> startInlineRenameFor(only));
+                    }
+                }
+                yield null;
+            }
+            case "graph.duplicate" -> {
                 if (selectedModels.stream().allMatch(GraphElementModel::isCopiable))
                     yield item.withAction(this::duplicateSelectedElements);
                 yield null;
             }
-            case "Color..." -> null; // TODO
-            case "Create Placemat" -> item.withAction(() -> createPlacematFromSelection(localPosition));
-            case "Create Subgraph from Selection" -> null; // TODO
-            case "Align and Distribute" -> null; // TODO
+            case "graph.color_picker" -> {
+                if (selectedModels.size() == 1) {
+                    var only = selectedModels.get(0);
+                    if (only.isColorable() && only instanceof IHasElementColor colored) {
+                        yield item.withAction(() -> openColorPopup(localPosition, only, colored));
+                    }
+                }
+                yield null;
+            }
+            case "graph.create_placemat" -> item.withAction(() -> createPlacematFromSelection(localPosition));
+            case "graph.create_subgraph_from_selection" -> {
+                // Wires are tolerated (filtered inside the model); nodes need to be copiable;
+                // placemats / sticky notes pass through. Final validation (e.g. placemat with
+                // non-selected contained node) happens inside extractSelectionToLocalSubgraph.
+                if (graph != null && graph.graphModel.allowSubgraphCreation()
+                        && !selectedModels.isEmpty()
+                        && selectedModels.stream().allMatch(m ->
+                                m instanceof com.lowdragmc.lowdraglib2.nodegraphtookit.model.wire.WireModel
+                                        || (m instanceof AbstractNodeModel an && an.isCopiable())
+                                        || m instanceof com.lowdragmc.lowdraglib2.nodegraphtookit.model.wiget.PlacematModel
+                                        || m instanceof com.lowdragmc.lowdraglib2.nodegraphtookit.model.wiget.StickyNoteModel)) {
+                    var selection = new ArrayList<>(selectedModels);
+                    yield item.withAction(() -> dispatchCommand(new CreateSubgraphFromSelectionCommand(selection)));
+                }
+                yield null;
+            }
+            case "graph.align_and_distribute" -> null; // TODO
             // Node-specific items
-            case "Delete and Reconnect" -> null; // TODO
-            case "Edit Subtitle" -> null; // TODO
-            case "Bypass Node" -> null; // TODO
-            case "Disable Node" -> null; // TODO
-            case "Disconnect All Wires" -> item.withAction(() -> {
+            case "graph.delete_and_reconnect" -> null; // TODO
+            case "graph.edit_subtitle" -> null; // TODO
+            case "graph.bypass_node" -> null; // TODO
+            case "graph.disable_node" -> null; // TODO
+            case "graph.disconnect_all_wires" -> item.withAction(() -> {
                 var wiresToDelete = selectedModels.stream()
                         .filter(AbstractNodeModel.class::isInstance)
                         .map(AbstractNodeModel.class::cast)
@@ -1045,7 +1876,18 @@ public class GraphView extends UIElement {
                     dispatchCommand(new GraphCommands.DeleteElementsCommand(wiresToDelete));
                 }
             });
-            case "Toggle Collapse" -> null; // TODO
+            case "graph.toggle_collapse" -> {
+                var nodes = selectedModels.stream()
+                        .filter(AbstractNodeModel.class::isInstance)
+                        .map(AbstractNodeModel.class::cast)
+                        .filter(GraphElementModel::isCollapsible)
+                        .toList();
+                if (nodes.isEmpty()) yield null;
+                // Target state mirrors the first node — collapse the whole batch when the first
+                // is expanded, expand when the first is already collapsed.
+                var target = !nodes.get(0).isCollapsed();
+                yield item.withAction(() -> nodes.forEach(n -> n.setCollapsed(target)));
+            }
             default -> {
                 // If the item already has an action, use it directly
                 if (item.getAction() != null) yield item;
@@ -1055,7 +1897,18 @@ public class GraphView extends UIElement {
     }
 
     /** Appends wire-specific menu items (e.g., Convert to Portals). */
-    private void appendWireMenuItems(TreeBuilder.Menu menuBuilder, List<GraphElementModel> models) {
+    private void appendWireMenuItems(TreeBuilder.Menu menuBuilder, List<GraphElementModel> models, Vector2f localPosition) {
+        // Reroute point — the menu equivalent of double-clicking the wire. Single wire only: the
+        // insertion point is a position on one specific polyline.
+        if (models.size() == 1 && models.get(0) instanceof WireModel wire && !(wire instanceof IGhostWireModel)) {
+            menuBuilder.leaf("graph.commands.insert_reroute_point", () -> {
+                var index = getModelElement(wire) instanceof WireElement wireElement
+                        ? wireElement.reroutePointInsertIndex(localPosition)
+                        : wire.getReroutePoints().size();
+                dispatchCommand(new WireCommands.InsertReroutePointCommand(wire, localPosition, index));
+            });
+        }
+
         menuBuilder.leaf("graph.commands.covert_wires_to_portals", () -> {
             var wires = new ArrayList<WireModel>();
             for (var model : models) {
@@ -1088,10 +1941,11 @@ public class GraphView extends UIElement {
     protected void updateGraphModelChanges() {
         if (graph == null) return;
         var graphModel = graph.graphModel;
-        var changes = graphModel.getCurrentGraphChangeDescription();
-        var somethingChanged = changeset.addNewModels(changes.getNewModels());
-        somethingChanged |= changeset.addChangedModels(changes.getChangedModels());
-        somethingChanged |= changeset.addDeletedModels(changes.getDeletedModels());
+        var changes = graphModel.flushChanges();
+        changeset.addNewModels(changes.getNewModels());
+        changeset.addChangedModels(changes.getChangedModels());
+        changeset.addDeletedModels(changes.getDeletedModels());
+        var somethingChanged = changeset.hasChanges();
         if (somethingChanged) {
             var newPlacemats = new ArrayList<GraphElement<?>>();
             var changedModels = new HashMap<UUID, ChangeHintList>();
@@ -1118,9 +1972,9 @@ public class GraphView extends UIElement {
             }
 
             updateChangedModels(changedModels, newPlacemats);
+            refreshGraphLogger();
         }
 
-        changes.clear();
         changeset.clear();
     }
 
@@ -1208,6 +2062,7 @@ public class GraphView extends UIElement {
                     || model instanceof PortModel
                     || model instanceof DeclarationModel
                     || model instanceof NodePreviewModel
+                    || model instanceof com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.BlockNodeModel
             ) continue;
 
             if (model.getContainer() != graph.graphModel) continue;
@@ -1236,6 +2091,55 @@ public class GraphView extends UIElement {
 //                addElement(previewModel);
             }
         }
+    }
+
+    /**
+     * Triggers inline rename for {@code model} if its UI element supports it (NodeElement,
+     * PlacematElement). Other element types currently have no inline edit affordance, so this
+     * is a no-op for them — users can rename them via the inspector when single-selected.
+     */
+    public void startInlineRenameFor(com.lowdragmc.lowdraglib2.nodegraphtookit.model.GraphElementModel model) {
+        var element = modelElements.get(model);
+        if (element instanceof com.lowdragmc.lowdraglib2.nodegraphtookit.gui.node.NodeElement nodeElement) {
+            if (nodeElement.getNodeTittle() != null) {
+                nodeElement.getNodeTittle().startInlineRename();
+            }
+        } else if (element instanceof com.lowdragmc.lowdraglib2.nodegraphtookit.gui.wiget.PlacematElement placematElement) {
+            placematElement.startInlineRename();
+        }
+    }
+
+    /**
+     * Opens a small floating {@link com.lowdragmc.lowdraglib2.gui.ui.elements.ColorSelector} at
+     * {@code localPosition}. Color changes dispatch via {@code SetElementColorCommand} so they
+     * land on the undo stack. Loses focus → closes (mirrors the menu lifecycle).
+     */
+    protected void openColorPopup(Vector2f localPosition,
+                                  com.lowdragmc.lowdraglib2.nodegraphtookit.model.GraphElementModel target,
+                                  com.lowdragmc.lowdraglib2.nodegraphtookit.model.IHasElementColor colored) {
+        var mui = getModularUI();
+        if (mui == null) return;
+
+        var colorSelector = new com.lowdragmc.lowdraglib2.gui.ui.elements.ColorSelector();
+        colorSelector.addClass("__node-graph-view_color-popup__");
+        colorSelector.addClass("panel_bg");
+        Style.defaultPipeline(colorSelector.getStyle(), s -> s.backgroundTexture(Sprites.RECT_SOLID));
+        Style.defaultPipeline(colorSelector.getLayout(), l -> l.positionType(TaffyPosition.ABSOLUTE)
+                .width(150)
+                .paddingAll(4));
+        colorSelector.setFocusable(true);
+        // Close on focus loss — same dismissal model the Menu uses.
+        colorSelector.setEnforceFocus(e -> colorSelector.removeSelf());
+        colorSelector.setColor(colored.getElementColor(), false);
+        colorSelector.setOnColorChangeListener(newColor ->
+                dispatchCommand(new ElementRenameColorCommands.SetElementColorCommand(target, newColor)));
+
+        var worldPos = getContentViewContainer().localToWorld(localPosition);
+        var rootOffset = mui.ui.rootElement.worldToLocalLayoutOffset(worldPos);
+        // Popup position is data-driven by mouse — pin via IMPORTANT.
+        Style.importantPipeline(colorSelector.getLayout(), l -> l.left(rootOffset.x).top(rootOffset.y));
+        mui.ui.rootElement.addChild(colorSelector);
+        colorSelector.focus();
     }
 
     protected boolean createWireUI(@Nullable WireModel wire) {
@@ -1287,6 +2191,9 @@ public class GraphView extends UIElement {
         } else {
 
             float padding = 20f;
+            // The title bar is drawn inside the top of the placemat, so grow the top gap by its
+            // height to keep the top-most nodes clear of the title.
+            float titleBar = PlacematElement.TITLE_BAR_HEIGHT;
             float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE;
             float maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
             for (var movable : movables) {
@@ -1299,8 +2206,8 @@ public class GraphView extends UIElement {
                 maxX = Math.max(maxX, pos.x + w);
                 maxY = Math.max(maxY, pos.y + h);
             }
-            var placematPos = new Vector2f(minX - padding, minY - padding);
-            var placematSize = new Vector2f(maxX - minX + padding * 2, maxY - minY + padding * 2);
+            var placematPos = new Vector2f(minX - padding, minY - padding - titleBar);
+            var placematSize = new Vector2f(maxX - minX + padding * 2, maxY - minY + padding * 2 + titleBar);
             dispatchCommand(new GraphCommands.CreatePlacematCommand("Placemat", placematPos, placematSize));
         }
     }
@@ -1314,6 +2221,7 @@ public class GraphView extends UIElement {
                 .toList();
         if (selectedModels.isEmpty()) return;
         clipboardData = graph.graphModel.copyElements(selectedModels, Platform.getFrozenRegistry());
+        clipboardAnchor = computeMovableAnchor(selectedModels);
     }
 
     public void cutSelectedElements() {
@@ -1321,9 +2229,44 @@ public class GraphView extends UIElement {
         deleteSelectedElements();
     }
 
+    /** Top-left corner of the given elements' bounding box, or {@code null} if none are positioned. */
+    @Nullable
+    private static Vector2f computeMovableAnchor(List<? extends GraphElementModel> models) {
+        float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE;
+        boolean found = false;
+        for (var model : models) {
+            if (model instanceof IMovable movable) {
+                var pos = movable.getPosition();
+                minX = Math.min(minX, pos.x);
+                minY = Math.min(minY, pos.y);
+                found = true;
+            }
+        }
+        return found ? new Vector2f(minX, minY) : null;
+    }
+
+    /** Paste at the current cursor position (keyboard shortcut path). */
     public void pasteElements() {
         if (graph == null || clipboardData == null) return;
-        dispatchCommand(new GraphCommands.PasteElementsCommand(clipboardData, new Vector2f(50, 50)));
+        var mui = getModularUI();
+        Vector2f target = null;
+        if (mui != null) {
+            target = snapPosition(getContentViewContainer()
+                    .worldToLocalLayoutOffset(new Vector2f(mui.getLastMouseX(), mui.getLastMouseY())));
+        }
+        pasteElementsAt(target);
+    }
+
+    /**
+     * Pastes the clipboard so the copied cluster's top-left lands at {@code targetLocalPosition}
+     * (content-local coordinates). Falls back to a fixed offset when no target/anchor is available.
+     */
+    public void pasteElementsAt(@Nullable Vector2f targetLocalPosition) {
+        if (graph == null || clipboardData == null) return;
+        Vector2f offset = targetLocalPosition != null && clipboardAnchor != null
+                ? new Vector2f(targetLocalPosition).sub(clipboardAnchor)
+                : new Vector2f(50, 50);
+        dispatchCommand(new GraphCommands.PasteElementsCommand(clipboardData, offset));
     }
 
     public void duplicateSelectedElements() {

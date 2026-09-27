@@ -1,6 +1,7 @@
 package com.lowdragmc.lowdraglib2.test.ui;
 
 import com.lowdragmc.lowdraglib2.LDLib2;
+import it.unimi.dsi.fastutil.booleans.BooleanConsumer;
 import com.lowdragmc.lowdraglib2.editor.resource.FilePath;
 import com.lowdragmc.lowdraglib2.editor.resource.UIResource;
 import com.lowdragmc.lowdraglib2.gui.ColorPattern;
@@ -29,13 +30,18 @@ import lombok.NoArgsConstructor;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.nbt.ByteArrayTag;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.IntArrayTag;
 import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.StringTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.material.Fluids;
 import dev.architectury.fluid.FluidStack;
 import org.jetbrains.annotations.NotNull;
@@ -43,7 +49,10 @@ import org.jetbrains.annotations.Nullable;
 
 import javax.annotation.Nonnull;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.BiConsumer;
 import java.util.function.Supplier;
@@ -58,8 +67,13 @@ public class TestComponentExamples implements IScreenTest {
                 .map(UITemplate::createUI)
                 .orElseGet(UI::empty);
         toggleStylesheets(ui, "#gdp-toggle", StylesheetManager.GDP);
+        toggleStylesheets(ui, "#ore-toggle", StylesheetManager.ORE);
         toggleStylesheets(ui, "#mc-toggle", StylesheetManager.MC);
         toggleStylesheets(ui, "#modern-toggle", StylesheetManager.MODERN);
+        for (var theme : BUILT_IN_THEMES.entrySet()) {
+            addStylesheetToggle(ui, theme.getKey(), theme.getValue());
+        }
+        packThemeTogglesIntoScroller(ui);
         var scrollerView = ui.select("#example-list", ScrollerView.class).findFirst().orElseThrow();
         var rightContainer = ui.select("#right_container", UIElement.class).findFirst().orElseThrow();
         rightContainer.layout(layout -> layout.paddingAll(6));
@@ -67,6 +81,7 @@ public class TestComponentExamples implements IScreenTest {
 
         BiConsumer<String, Supplier<UIElement>> addExample = (name, exampleSupplier) -> {
             var toggle = new Toggle();
+            toggle.setId("example-" + name.replace(" / ", "-").replace(' ', '-'));
             toggle.setToggleGroup(toggleGroup);
             toggle.noText();
             toggle.toggleStyle(style -> {
@@ -81,7 +96,11 @@ public class TestComponentExamples implements IScreenTest {
             scrollerView.addScrollViewChild(toggle.setOnToggleChanged(isON -> {
                 if (isON) {
                     rightContainer.clearAllChildren();
-                    rightContainer.addChild(exampleSupplier.get());
+                    rightContainer.addChildren(
+                            new Label().setText(name)
+                                    .textStyle(style -> style.fontSize(12).textColor(0xff88ccff).textShadow(true)),
+                            exampleSupplier.get()
+                    );
                 }
             }));
         };
@@ -97,6 +116,7 @@ public class TestComponentExamples implements IScreenTest {
         addExample.accept("scroller", this::scrollerExample);
         addExample.accept("text-field", this::textFieldExample);
         addExample.accept("tag-field", this::tagFieldExample);
+        addExample.accept("structured-tag-editor", this::structuredTagEditorExample);
         addExample.accept("tree-list", this::treeListExample);
         addExample.accept("code-editor", this::codeEditorExample);
         addExample.accept("scene", this::sceneExample);
@@ -109,15 +129,92 @@ public class TestComponentExamples implements IScreenTest {
         return new ModularUI(ui);
     }
 
+    /**
+     * The themes the saved layout has no toggle for. Keyed by the name shown, so adding a theme to
+     * {@link StylesheetManager} is one line here rather than a trip through the UI editor.
+     */
+    private static final Map<String, ResourceLocation> BUILT_IN_THEMES = new LinkedHashMap<>(Map.of());
+    static {
+        BUILT_IN_THEMES.put("dusk", StylesheetManager.DUSK);
+        BUILT_IN_THEMES.put("carbon", StylesheetManager.CARBON);
+        BUILT_IN_THEMES.put("mint", StylesheetManager.MINT);
+        BUILT_IN_THEMES.put("plum", StylesheetManager.PLUM);
+        BUILT_IN_THEMES.put("paper", StylesheetManager.PAPER);
+        BUILT_IN_THEMES.put("latte", StylesheetManager.LATTE);
+    }
+
+    /**
+     * Puts the theme toggles into a scroller of their own.
+     *
+     * <p>Ten of them ate the top of the sidebar and pushed the component list off the bottom. They are
+     * <em>moved</em> rather than rebuilt because four of them come from the saved layout — and moving
+     * has a catch: {@link ToggleGroupElement#removeChild} clears a toggle's group on the way out, so
+     * every one of them would come back ungrouped and stay on once clicked. The group is taken from a
+     * toggle before the move and put back after.
+     */
+    private void packThemeTogglesIntoScroller(UI ui) {
+        var first = ui.select("#gdp-toggle", Toggle.class).findFirst().orElse(null);
+        if (first == null || first.getParent() == null) return;
+        var container = first.getParent();
+        var group = first.getToggleGroup();
+        var toggles = container.getChildren().stream()
+                .filter(Toggle.class::isInstance)
+                .map(Toggle.class::cast)
+                .toList();
+        if (toggles.isEmpty()) return;
+
+        var scroller = new ScrollerView();
+        scroller.layout(layout -> {
+            layout.widthPercent(100);
+            layout.height(THEME_SCROLLER_HEIGHT);
+        });
+        container.addChildAt(scroller, container.getChildren().indexOf(toggles.getFirst()));
+        for (var toggle : toggles) {
+            container.removeChild(toggle);
+            scroller.addScrollViewChild(toggle);
+            toggle.setToggleGroup(group);
+        }
+    }
+
+    /** Tall enough for four rows, so it reads as a list that scrolls rather than as a clipped one. */
+    private static final int THEME_SCROLLER_HEIGHT = 64;
+
     private void toggleStylesheets(UI ui, String selector, ResourceLocation stylesheet) {
-        ui.select(selector, Toggle.class).findFirst().ifPresent(toggle -> toggle.setOnToggleChanged(isOn -> {
-            // switch to the selected stylesheet
+        ui.select(selector, Toggle.class).findFirst()
+                .ifPresent(toggle -> toggle.setOnToggleChanged(switchTo(toggle, stylesheet)));
+    }
+
+    /**
+     * Adds a theme toggle that the saved layout does not have one for.
+     *
+     * <p>The four original toggles are elements inside {@code example_layout.ui.nbt}, so adding a theme
+     * would otherwise mean re-authoring a binary layout in the editor to add one row. These are built
+     * beside them instead, joined to the same {@link Toggle.ToggleGroup} so the whole set stays
+     * one-of-many, and carrying no styling of their own so the stylesheet under test draws them exactly
+     * as it draws the four.
+     */
+    private void addStylesheetToggle(UI ui, String name, ResourceLocation stylesheet) {
+        var sibling = ui.select("#gdp-toggle", Toggle.class).findFirst().orElse(null);
+        if (sibling == null || sibling.getParent() == null) return;
+        var toggle = new Toggle();
+        toggle.setId(name + "-toggle");
+        // capitalised to sit with the four the layout ships with, which read GDP / Ore / MC / Modern
+        toggle.setText(name.substring(0, 1).toUpperCase(Locale.ROOT) + name.substring(1));
+        sibling.getParent().addChild(toggle);
+        // after the add: a ToggleGroupElement parent assigns its own group on the way in, and this is
+        // the same group, but a plain container would leave the toggle ungrouped and free to stay on
+        toggle.setToggleGroup(sibling.getToggleGroup());
+        toggle.setOnToggleChanged(switchTo(toggle, stylesheet));
+    }
+
+    private static BooleanConsumer switchTo(Toggle toggle, ResourceLocation stylesheet) {
+        return isOn -> {
             var mui = toggle.getModularUI();
             if (isOn && mui != null) {
                 mui.getStyleEngine().clearAllStylesheets();
                 mui.getStyleEngine().addStylesheet(StylesheetManager.INSTANCE.getStylesheetSafe(stylesheet));
             }
-        }));
+        };
     }
 
     private UIElement buttonExample() {
@@ -189,28 +286,31 @@ public class TestComponentExamples implements IScreenTest {
     }
 
     private UIElement toggleExample() {
+        var group = new ToggleGroupElement();
+        group.addChildren(
+                new Label().setText("Toggle Group"),
+                new Toggle().setText("toggle 1"),
+                new Toggle().setText("toggle 2").setValue(true, false),
+                new Toggle().setText("toggle 3")
+        ).addClass("panel_bg");
         return new UIElement().layout(layout -> layout.gapAll(2)).addChildren(
-                new Toggle().setText("my toggle"),
+                new Toggle().setText("my toggle").setValue(true, false),
                 new Toggle().setText("disabled").disabled(),
-                new ToggleGroupElement().addChildren(
-                        new Label().setText("Toggle Group"),
-                        new Toggle().setText("toggle 1"),
-                        new Toggle().setText("toggle 2"),
-                        new Toggle().setText("toggle 3")
-                ).addClass("panel_bg")
+                group
         );
     }
 
     private UIElement switchExample() {
         return new UIElement().layout(layout -> layout.gapAll(2)).addChildren(
-                new Switch(),
+                new Switch().setValue(true, false),
                 new Switch().disabled()
         );
     }
 
     private UIElement selectorExample() {
         return new UIElement().layout(layout -> layout.gapAll(2)).addChildren(
-                new Selector<Direction>().setCandidates(Arrays.stream(Direction.values()).toList()),
+                new Selector<Direction>().setSelected(Direction.NORTH, false)
+                        .setCandidates(Arrays.stream(Direction.values()).toList()),
                 new Selector<Item>()
                         .setSelected(Items.APPLE)
                         .setCandidates(List.of(Items.APPLE, Items.STONE, Items.CHEST))
@@ -228,7 +328,8 @@ public class TestComponentExamples implements IScreenTest {
     private UIElement textFieldExample() {
         return new UIElement().layout(layout -> layout.gapAll(2)).addChildren(
                 new TextField(),
-                new TextField().setText("disabled").disabled()
+                new TextField().setText("disabled").disabled(),
+                new TextField().setText("editable").textFieldStyle(style -> style.fontSize(13)).layout(l -> l.height(18))
         );
     }
 
@@ -244,9 +345,26 @@ public class TestComponentExamples implements IScreenTest {
         );
     }
 
+    private UIElement structuredTagEditorExample() {
+        var root = new CompoundTag();
+        root.putString("name", "LDLib2");
+        root.putInt("count", 3);
+        root.put("bytes", new ByteArrayTag(new byte[] {1, 2, 3}));
+        root.put("ints", new IntArrayTag(new int[] {10, 20, 30}));
+        var list = new ListTag();
+        list.add(StringTag.valueOf("first"));
+        list.add(StringTag.valueOf("second"));
+        root.put("list", list);
+        return new StructuredTagEditor()
+                .setValue(root, false)
+                .layout(layout -> {
+                    layout.widthPercent(100);
+                    layout.heightPercent(100);
+                });
+    }
+
     private UIElement treeListExample() {
-        return new UIElement().layout(layout -> layout.gapAll(2)).addChildren(
-                new TreeList<>(TreeBuilder.start("root")
+        var root = TreeBuilder.start("root")
                         .leaf("leaf 1", null)
                         .leaf("leaf 2", null)
                         .branch("branch 3", branch -> branch.leaf("leaf 3-1", null))
@@ -256,8 +374,10 @@ public class TestComponentExamples implements IScreenTest {
                                 .branch("branch 5-2", branch2 ->
                                         branch2.leaf("leaf 5-2-1", null)
                                                 .leaf("leaf 5-2-2", null)))
-                        .build())
-        );
+                        .build();
+        var tree = new TreeList<>(root);
+        tree.expandAllNodesIf(root, node -> true);
+        return new UIElement().layout(layout -> layout.gapAll(2)).addChild(tree);
     }
 
     private UIElement codeEditorExample() {
@@ -347,7 +467,7 @@ public class TestComponentExamples implements IScreenTest {
                     public void onResultSelected(@Nullable Block value) {
                         // do noting
                     }
-                }).setCandidateUIProvider(UIElementProvider.iconText(
+                }).setSelected(Blocks.STONE, false).setCandidateUIProvider(UIElementProvider.iconText(
                         block -> new ItemStackTexture(block.asItem()),
                         block -> Component.translatable(block.getDescriptionId())
                 ))

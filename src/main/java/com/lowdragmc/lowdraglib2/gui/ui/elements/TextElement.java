@@ -2,6 +2,7 @@ package com.lowdragmc.lowdraglib2.gui.ui.elements;
 
 import com.lowdragmc.lowdraglib2.LDLib2;
 import com.lowdragmc.lowdraglib2.configurator.annotation.*;
+import com.lowdragmc.lowdraglib2.gui.LDLibFonts;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.data.Horizontal;
 import com.lowdragmc.lowdraglib2.gui.ui.data.Vertical;
@@ -20,7 +21,6 @@ import com.mojang.blaze3d.systems.RenderSystem;
 
 import lombok.Getter;
 import net.minecraft.MethodsReturnNonnullByDefault;
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
@@ -262,7 +262,7 @@ public class TextElement extends UIElement {
 
     @Environment(EnvType.CLIENT)
     public Font getFont() {
-        return Minecraft.getInstance().font;
+        return LDLibFonts.font();
     }
 
     @Override
@@ -333,7 +333,7 @@ public class TextElement extends UIElement {
                 guiContext.pose.pushPose();
                 guiContext.pose.translate(lineX, lineY, 0);
                 guiContext.pose.scale(scale, scale, 1);
-                guiContext.graphics.drawString(font, line, 0, 0, color, dropShadow);
+                LDLibFonts.drawText(guiContext.graphics, font, line, 0, 0, color, dropShadow);
                 guiContext.pose.popPose();
             }
         });

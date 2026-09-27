@@ -2,8 +2,8 @@ package com.lowdragmc.lowdraglib2.nodegraphtookit.model.node;
 
 import com.lowdragmc.lowdraglib2.gui.ui.data.Tooltips;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.IFieldConstantConfigurable;
-import com.lowdragmc.lowdraglib2.nodegraphtookit.api.IFieldValueConfigurable;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.port.*;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.api.type.ITypeConfigurable;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.type.TypeHandle;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.type.TypeHandles;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.utils.ReorderType;
@@ -17,6 +17,7 @@ import lombok.Setter;
 import net.minecraft.network.chat.Component;
 import org.jetbrains.annotations.Nullable;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Type;
 
 import java.util.*;
@@ -54,6 +55,32 @@ public class PortModel extends GraphElementModel implements IPort, IHasDisplayNa
     // runtime
     @Nullable
     protected Type dataTypeCache;
+
+    /**
+     * Optional per-port configurator override. When non-null, this is used by
+     * {@link #buildConfigurator} instead of resolving from {@code dataTypeHandle}. Set via
+     * {@code IInputPortBuilder.withConfigurable} or {@code IOptionBuilder.withConfigurable}.
+     * Not persisted — reapplied on every {@code defineNode} call.
+     */
+    @Setter @Nullable
+    protected ITypeConfigurable customTypeConfigurable;
+    /**
+     * Per-port toggle for the inspector field. When {@code false}, {@link #buildConfigurator}
+     * (inherited from {@link IFieldConstantConfigurable}) is a no-op. Reapplied on every
+     * {@code defineNode} call, mirroring the {@link #customTypeConfigurable} lifecycle.
+     */
+    @Setter @Getter
+    protected boolean configuratorEnabled = true;
+    /**
+     * Optional reflection field this port maps to. Surfaced by {@link #getValueField()} so the
+     * default configurator accessor can read annotations such as {@code @ConfigNumber}. Not
+     * persisted — reapplied on every {@code defineNode} call.
+     */
+    @Setter @Nullable
+    protected Field valueField;
+    /** Object owner paired with {@link #valueField} for reflective annotation access. */
+    @Setter @Nullable
+    protected Object valueOwer;
 
     public PortModel(PortNodeModel nodeModel,
                      PortDirection direction,
@@ -209,6 +236,19 @@ public class PortModel extends GraphElementModel implements IPort, IHasDisplayNa
 
     public void setDataTypeHandle(TypeHandle dataTypeHandle) {
         if (Objects.equals(this.dataTypeHandle, dataTypeHandle)) return;
+        // A port's UID is derived from its data type (see computePortUid), and wires persist their
+        // endpoints by port UID (WireModel#getFromPortUid) and relink via GraphModel#getModel(uid) on
+        // load. Without re-keying here, a type change would leave the in-session port under its OLD-type
+        // UID (wires stay linked in-session because the port->wire index is keyed by portId, not UID) —
+        // but a reload reconstructs the port under the NEW-type UID, so the saved wire points at the
+        // now-nonexistent old UID and is silently dropped. Re-key so the in-session identity matches what
+        // deserialization recomputes; the object-based in-session wire links are unaffected.
+        var newUid = computePortUid(nodeModel, direction, portId, portType, dataTypeHandle, parentPort);
+        if (!newUid.equals(getUid())) {
+            if (graphModel != null) graphModel.unregisterPort(this);
+            setUid(newUid);
+            if (graphModel != null) graphModel.registerPort(this);
+        }
         this.dataTypeHandle = dataTypeHandle;
         this.dataTypeCache = null;
         if (isPolymorphic() && !isAscendable()) {
@@ -295,13 +335,28 @@ public class PortModel extends GraphElementModel implements IPort, IHasDisplayNa
      * @return The default tooltip is "[name] [Input|Output] of type (friendly name of the port type)" for ports (e.g. "input of type float").
      */
     public Tooltips getDefaultTooltips() {
-        return Tooltips.of(getTitle().copy().append(Component.literal(": " + (direction.name) + (dataTypeHandle.equals(TypeHandles.EXECUTION_FLOW) ? " execution flow" :
-                (" of type " + dataTypeHandle.getFriendlyName())))));
+        return Tooltips.of(getTitle().copy().append(" (")
+                .append(Component.literal(dataTypeHandle.getFriendlyName()).withColor(dataTypeHandle.getTypeColor()))
+                .append(")")
+        );
     }
 
     public Tooltips getTooltips() {
-        if (tooltips == null) return getDefaultTooltips();
+        var custom = getCustomTooltips();
+        return custom.isEmpty() ? getDefaultTooltips() : custom;
+    }
+
+    @Override
+    public Tooltips getCustomTooltips() {
         return tooltips;
+    }
+
+    /**
+     * The visual style of this port's connector. Overridden by {@link PortModelImpl} to let a port
+     * pick its own; the base implementation is the default dot.
+     */
+    public PortConnectorUI getConnectorUI() {
+        return PortConnectorUI.DEFAULT;
     }
 
     public void setTooltips(Tooltips tooltips) {
@@ -572,5 +627,27 @@ public class PortModel extends GraphElementModel implements IPort, IHasDisplayNa
     @Override
     public @Nullable Constant getConfigurableConstant() {
         return getEmbeddedValue();
+    }
+
+    @Override
+    public void onValueChanged() {
+        if (this.graphModel != null) {
+            this.graphModel.getCurrentGraphChangeDescription().addChangedModel(this, ChangeHint.DATA);
+        }
+    }
+
+    @Override
+    public @Nullable ITypeConfigurable getCustomTypeConfigurable() {
+        return customTypeConfigurable;
+    }
+
+    @Override
+    public java.lang.reflect.Field getValueField() {
+        return valueField;
+    }
+
+    @Override
+    public Object getValueOwer() {
+        return valueOwer;
     }
 }

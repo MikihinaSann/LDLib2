@@ -12,6 +12,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.packs.resources.ResourceManager;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -28,15 +29,33 @@ public class Platform {
     @ApiStatus.Internal
     public static RegistryAccess SERVER_REGISTRY_ACCESS = null;
 
+    @ApiStatus.Internal
+    public static ResourceManager RESOURCE_MANAGER = null;
+
     // This is a helper method to check if the ServerLevel is safe to access.
     // @return true if the ServerLevel is not safe to access, otherwise false.
     public static boolean isServerNotSafe() {
         if (Platform.isClient()) {
-            return Minecraft.getInstance().getConnection() == null;
+            var minecraft = getMinecraftClient();
+            return minecraft == null || minecraft.getConnection() == null;
         } else {
             var server = getMinecraftServer();
-            return server == null || server.isStopped() || !server.isRunning();
+            return !serverSafe(server) || server.isCurrentlySaving();
         }
+    }
+
+    /**
+     * @return true when the server can still accept scheduled work.
+     */
+    public static boolean serverSafe(MinecraftServer server) {
+        return server != null && !server.isStopped() && !server.isShutdown() && server.isRunning();
+    }
+
+    /**
+     * @return true when the current server can still accept scheduled work.
+     */
+    public static boolean serverSafe() {
+        return serverSafe(getMinecraftServer());
     }
 
     public static String platformName() {
@@ -73,7 +92,15 @@ public class Platform {
         return SERVER;
     }
 
-
+    /**
+     * The client instance, or null when there is none. {@link #isClient()} only tells you which dist we are on:
+     * datagen runs on the client dist without ever constructing a {@link Minecraft}, so everything that reaches
+     * for the client during mod loading has to cope with a null here.
+     */
+    @Nullable
+    public static Minecraft getMinecraftClient() {
+        return isClient() ? Minecraft.getInstance() : null;
+    }
 
     public ResourceManager getResourceProvider() {
         return ResourceHelper.getResourceManager();
@@ -112,8 +139,9 @@ public class Platform {
             RegistryAccess access = serverRegistryAccess == null ? BLANK_REGISTRY_ACCESS : serverRegistryAccess;
             return access == null ? BLANK_REGISTRY_ACCESS : access;
         } else if (LDLib2.isRemote()) {
-            if (Minecraft.getInstance().getConnection() != null) {
-                return getRegistryFromMultipleSources(Minecraft.getInstance().getConnection().registryAccess(), serverRegistryAccess);
+            var minecraft = getMinecraftClient();
+            if (minecraft != null && minecraft.getConnection() != null) {
+                return getRegistryFromMultipleSources(minecraft.getConnection().registryAccess(), serverRegistryAccess);
             }
         }
         RegistryAccess access = serverRegistryAccess == null ? getClientRegistryAccess() : serverRegistryAccess;
@@ -125,10 +153,9 @@ public class Platform {
     }
 
     public static RegistryAccess getClientRegistryAccess() {
-        if (LDLib2.isClient()) {
-            if (Minecraft.getInstance().getConnection() != null) {
-                return Minecraft.getInstance().getConnection().registryAccess();
-            }
+        var minecraft = getMinecraftClient();
+        if (minecraft != null && minecraft.getConnection() != null) {
+            return minecraft.getConnection().registryAccess();
         }
         return SERVER_REGISTRY_ACCESS == null ? BLANK_REGISTRY_ACCESS : SERVER_REGISTRY_ACCESS;
     }
@@ -152,5 +179,18 @@ public class Platform {
                 return Arrays.stream(accesses).filter(java.util.Objects::nonNull).flatMap(RegistryAccess::registries);
             }
         };
+    }
+
+    public static void executeOnClient(Runnable runnable) {
+        var minecraft = getMinecraftClient();
+        if (minecraft != null) {
+            minecraft.execute(runnable);
+        }
+    }
+
+    public static void executeOnServer(Runnable runnable) {
+        if (LDLib2.isServer()) {
+            getMinecraftServer().execute(runnable);
+        }
     }
 }

@@ -1,6 +1,7 @@
 package com.lowdragmc.lowdraglib2.nodegraphtookit.gui;
 
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.GraphViewLod;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvent;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.dependency.DependencyTypes;
@@ -34,6 +35,19 @@ public abstract class ModelElement extends UIElement {
         dependencies = new UIDependencies(this);
         addEventListener(UIEvents.STYLE_CHANGED, this::onStyleChanged);
         addEventListener(UIEvents.REMOVED, this::onRemoved);
+    }
+
+    /**
+     * Whether the view showing this element forbids changing the graph.
+     *
+     * <p>False for an element not attached to a view yet — an element with nowhere to dispatch to
+     * cannot edit anything either way, and defaulting to "read-only" would make elements build
+     * themselves disabled and never recover.</p>
+     *
+     * @see GraphView#isReadOnly()
+     */
+    public boolean isGraphReadOnly() {
+        return graphView != null && graphView.isReadOnly();
     }
 
     public void setGraphView(@Nullable GraphView graphView) {
@@ -185,6 +199,18 @@ public abstract class ModelElement extends UIElement {
     }
 
     /**
+     * The level of detail this element should draw itself at, taken from the graph canvas' current
+     * zoom. Returns {@link GraphViewLod#FULL} when the element is not attached to a graph view.
+     *
+     * <p>Elements that honour this must do so purely in their draw methods — collapsing to flat
+     * rects and skipping child recursion. Do not toggle {@code display}/{@code isVisible}: those go
+     * through the style pipeline and dirty the layout tree every frame the zoom changes.
+     */
+    protected GraphViewLod lod() {
+        return graphView == null ? GraphViewLod.FULL : graphView.graphView.getLod();
+    }
+
+    /**
      * Indicates whether this element can be selected.
      *
      * @return {@code true} if the element is selectable, {@code false} otherwise.
@@ -257,5 +283,18 @@ public abstract class ModelElement extends UIElement {
 
     public boolean isGraphMouseDownCaptured() {
         return false;
+    }
+
+    /**
+     * Whether {@link GraphView#wireSelectableElement} should attach the default select + drag-move
+     * {@code MOUSE_DOWN} handler to the whole element body. Elements that want to restrict dragging to
+     * a specific sub-element (e.g. {@link com.lowdragmc.lowdraglib2.nodegraphtookit.gui.wiget.PlacematElement}
+     * dragging only via its title bar) override this to return {@code false} and wire their own handle,
+     * letting body clicks fall through to the graph view for region selection.
+     *
+     * @return {@code true} to install the default body-wide interaction handler, {@code false} to opt out.
+     */
+    public boolean wantsDefaultMouseWiring() {
+        return true;
     }
 }

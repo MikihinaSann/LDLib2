@@ -28,9 +28,23 @@ import java.util.UUID;
  * @port ELB_GG 
  * @date_port 2026/03/29 
  * @port_to fabric
+ *
+ * <p>⚠️ <b>This class is in {@code math} but is not common code</b>: it holds a {@link ISceneObject}
+ * and cannot load without one, and that interface is {@code @Environment(EnvType.CLIENT)}. Left as it is on
+ * purpose rather than moved or untangled — as of 2.2.38 <b>every</b> user of this class and of
+ * {@code ISceneObject} is already under {@code editor/} or {@code configurator/ui}, so nothing common
+ * wants a {@code Transform}, and the parts that would have to move to break the link
+ * ({@link #awake()} resolving a parent by uuid, {@code addChildInternal} propagating the scene) are
+ * scene deserialization, where a behaviour change is not worth a hygiene win with no consumer.
+ * {@link ITransform} is the piece that genuinely is common, and it has no such dependency.
+ *
+ * <p>Implements {@link ITransform}, which is the part of this a gizmo needs — every method of that
+ * interface already existed here with the same signature, so this is a declaration and not a change.
+ * Anything that wants to be dragged in a scene without being a scene object implements that instead
+ * of keeping one of these beside it and copying values back and forth.
  */
 @Accessors(fluent = true)
-public final class Transform implements IPersistedSerializable, IConfigurable {
+public final class Transform implements ITransform, IPersistedSerializable, IConfigurable {
     @Getter
     @Accessors(fluent = true)
     @Persisted

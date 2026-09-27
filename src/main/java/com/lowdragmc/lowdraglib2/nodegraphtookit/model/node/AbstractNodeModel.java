@@ -1,6 +1,7 @@
 package com.lowdragmc.lowdraglib2.nodegraphtookit.model.node;
 
 import com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.api.node.IResizeWidth;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.GraphElement;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.node.NodeElement;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.*;
@@ -15,7 +16,7 @@ import org.jetbrains.annotations.Nullable;
 import java.util.*;
 import java.util.stream.Stream;
 public abstract class AbstractNodeModel extends GraphElementModel implements IHasName, IHasDisplayName, IMovable,
-        IHasElementColor, IHasContextualMenuItems, IGraphElementUIModel {
+        IHasElementColor, IHasContextualMenuItems, IGraphElementUIModel, IResizeWidth {
     @Persisted
     private Vector2f position = new Vector2f(0);
     @Persisted @Getter
@@ -24,13 +25,39 @@ public abstract class AbstractNodeModel extends GraphElementModel implements IHa
     protected Component title;
     @Nullable
     protected Component tooltip;
+    /** User-chosen color; meaningful only when {@link #userColor} is true. */
+    @Persisted
+    protected int elementColor = 0xFFFFFFFF;
+    /** Whether the user has explicitly chosen a color via setColor(). */
+    @Persisted
+    protected boolean userColor = false;
 
     private SpawnFlags spawnFlags = SpawnFlags.DEFAULT;
 
     private NodePreviewModel nodePreviewModel;
+    /**
+     * Persisted source of truth for whether the preview panel is expanded. Mirrored onto the runtime
+     * {@link NodePreviewModel} (which has no independent serialization) whenever it is (re)created.
+     */
+    @Persisted
+    private boolean previewExpanded = true;
 
     @Persisted
     private ModelState state;
+
+    /**
+     * Floor for the auto-computed width. {@code 0} (default) means no floor — width is whatever
+     * children compute. Edited via the inspector when {@link Capabilities#RESIZABLE} is on.
+     */
+    @Persisted
+    protected float minWidth = 0f;
+
+    /**
+     * Whether the node UI is collapsed to title-only. Element subclasses decide which parts to
+     * hide; wires connected to hidden ports re-route to the title bar (see {@link com.lowdragmc.lowdraglib2.nodegraphtookit.gui.WireElement}).
+     */
+    @Persisted @Getter
+    protected boolean collapsed = false;
 
     protected AbstractNodeModel() {
         capabilities.addAll(List.of(
@@ -42,7 +69,8 @@ public abstract class AbstractNodeModel extends GraphElementModel implements IHa
                 Capabilities.COLLAPSIBLE,
                 Capabilities.COLORABLE,
                 Capabilities.ASCENDABLE,
-                Capabilities.DISABLEABLE
+                Capabilities.DISABLEABLE,
+                Capabilities.RESIZABLE
         ));
     }
 
@@ -58,13 +86,38 @@ public abstract class AbstractNodeModel extends GraphElementModel implements IHa
      */
     public abstract IGuiTexture getNodeIcon();
 
-    public abstract int getElementColor();
+    @Override
+    public int getElementColor() {
+        return userColor ? elementColor : getDefaultColor();
+    }
 
-    public abstract void setColor(int color);
+    @Override
+    public void setColor(int color) {
+        if (userColor && elementColor == color) return;
+        elementColor = color;
+        userColor = true;
+        GraphModel gm = getGraphModel();
+        if (gm != null) gm.getCurrentGraphChangeDescription().addChangedModel(this, ChangeHint.STYLE);
+    }
 
-    public abstract int getDefaultColor();
+    @Override
+    public int getDefaultColor() {
+        return 0;
+    }
 
-    public abstract boolean hasUserColor();
+    @Override
+    public boolean hasUserColor() {
+        return userColor;
+    }
+
+    @Override
+    public void resetColor() {
+        if (!userColor) return;
+        userColor = false;
+        elementColor = getDefaultColor();
+        GraphModel gm = getGraphModel();
+        if (gm != null) gm.getCurrentGraphChangeDescription().addChangedModel(this, ChangeHint.STYLE);
+    }
 
     /**
      * Gets the state of the node. Indicates whether the node is enabled or disabled.
@@ -122,6 +175,37 @@ public abstract class AbstractNodeModel extends GraphElementModel implements IHa
         if (gm != null) gm.getCurrentGraphChangeDescription().addChangedModel(this, ChangeHint.LAYOUT);
     }
 
+    @Override
+    public float getMinWidth() {
+        return Math.max(minWidth, getNodeWidth());
+    }
+
+    /**
+     * Gets the intrinsic minimum width required by this node type. User-edited {@link #minWidth}
+     * cannot go below this value.
+     */
+    public float getNodeWidth() {
+        return 0f;
+    }
+
+    @Override
+    public void setMinWidth(float value) {
+        if (!isResizable()) return;
+        value = Math.max(value, Math.max(0, getNodeWidth()));
+        if (minWidth == value) return;
+        minWidth = value;
+        GraphModel gm = getGraphModel();
+        if (gm != null) gm.getCurrentGraphChangeDescription().addChangedModel(this, ChangeHint.LAYOUT);
+    }
+
+    public void setCollapsed(boolean value) {
+        if (!isCollapsible()) return;
+        if (collapsed == value) return;
+        collapsed = value;
+        GraphModel gm = getGraphModel();
+        if (gm != null) gm.getCurrentGraphChangeDescription().addChangedModel(this, ChangeHint.LAYOUT);
+    }
+
     public SpawnFlags getSpawnFlags() {
         return spawnFlags;
     }
@@ -138,8 +222,33 @@ public abstract class AbstractNodeModel extends GraphElementModel implements IHa
 
     public abstract boolean hasNodePreview();
 
+    public boolean isNodePreviewExpandedByDefault() {
+        return true;
+    }
+
     public NodePreviewModel getNodePreviewModel() {
         return hasNodePreview() ? nodePreviewModel : null;
+    }
+
+    /** Whether the preview panel is expanded (persisted; meaningful only when {@link #hasNodePreview()}). */
+    public boolean isPreviewExpanded() {
+        return previewExpanded;
+    }
+
+    /**
+     * Sets the preview panel's expanded state, mirrors it onto the live preview model, and fires a
+     * {@link ChangeHint#DATA} change so the preview UI toggles.
+     */
+    public void setPreviewExpanded(boolean expanded) {
+        if (previewExpanded == expanded) return;
+        previewExpanded = expanded;
+        if (nodePreviewModel != null) {
+            nodePreviewModel.setExpanded(expanded);
+            GraphModel gm = getGraphModel();
+            if (gm != null) {
+                gm.getCurrentGraphChangeDescription().addChangedModel(nodePreviewModel, ChangeHint.DATA);
+            }
+        }
     }
 
     @Override
@@ -158,6 +267,7 @@ public abstract class AbstractNodeModel extends GraphElementModel implements IHa
 
     public void onCreateNode() {
         if (hasNodePreview() && spawnFlags != SpawnFlags.ORPHAN) {
+            previewExpanded = isNodePreviewExpandedByDefault();
             addNodePreview();
         }
     }
@@ -167,6 +277,7 @@ public abstract class AbstractNodeModel extends GraphElementModel implements IHa
 
         setName(sourceNode.getName());
         if (sourceNode.hasNodePreview() && sourceNode.getNodePreviewModel() != null) {
+            this.previewExpanded = sourceNode.previewExpanded;
             NodePreviewModel preview = addNodePreview();
             preview.onDuplicateNodePreview(sourceNode.getNodePreviewModel());
         }
@@ -182,7 +293,12 @@ public abstract class AbstractNodeModel extends GraphElementModel implements IHa
         return new NodePreviewModel();
     }
 
-    void syncNodePreview() {
+    /**
+     * Reconciles the preview model with {@link #hasNodePreview()}: creates the preview model when the
+     * node should have one but doesn't (e.g. after deserialize, where the lifecycle hooks that create
+     * it on fresh spawn don't run), or drops it when it shouldn't. Safe to call repeatedly.
+     */
+    public void syncNodePreview() {
         if (hasNodePreview() && nodePreviewModel == null) {
             addNodePreview();
         } else if (!hasNodePreview() && nodePreviewModel != null) {
@@ -194,6 +310,8 @@ public abstract class AbstractNodeModel extends GraphElementModel implements IHa
         NodePreviewModel m = createNodePreview();
         nodePreviewModel = m;
         m.onCreateNodePreview(this);
+        // Mirror the persisted expanded state onto the freshly-created (unserialized) preview model.
+        m.setExpanded(previewExpanded);
 
         GraphModel gm = getGraphModel();
         gm.registerNodePreview(nodePreviewModel);

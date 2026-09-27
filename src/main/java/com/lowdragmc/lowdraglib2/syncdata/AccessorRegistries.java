@@ -4,16 +4,19 @@ import com.lowdragmc.lowdraglib2.LDLib2;
 import com.lowdragmc.lowdraglib2.client.renderer.IRenderer;
 import com.lowdragmc.lowdraglib2.editor.resource.IResourcePath;
 import com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture;
+import com.lowdragmc.lowdraglib2.gui.ui.UITemplate;
 import com.lowdragmc.lowdraglib2.gui.ui.data.LengthPercent;
 import com.lowdragmc.lowdraglib2.gui.ui.data.Pivot;
 import com.lowdragmc.lowdraglib2.gui.ui.data.Translate2D;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvent;
+import com.lowdragmc.lowdraglib2.math.HDRColor;
 import com.lowdragmc.lowdraglib2.math.Position;
 import com.lowdragmc.lowdraglib2.math.Range;
 import com.lowdragmc.lowdraglib2.math.Size;
 import com.lowdragmc.lowdraglib2.syncdata.accessor.IAccessor;
 import com.lowdragmc.lowdraglib2.syncdata.accessor.arraylike.ArrayAccessor;
 import com.lowdragmc.lowdraglib2.syncdata.accessor.arraylike.CollectionAccessor;
+import com.lowdragmc.lowdraglib2.syncdata.accessor.maplike.MapAccessor;
 import com.lowdragmc.lowdraglib2.syncdata.accessor.direct.CustomDirectAccessor;
 import com.lowdragmc.lowdraglib2.syncdata.accessor.direct.EnumAccessor;
 import com.lowdragmc.lowdraglib2.syncdata.accessor.direct.PrimitiveAccessor;
@@ -25,6 +28,7 @@ import com.mojang.serialization.Codec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import net.minecraft.Util;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.UUIDUtil;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -37,8 +41,10 @@ import net.minecraft.util.ExtraCodecs;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.crafting.Ingredient;
 import net.minecraft.world.item.crafting.Recipe;
 import net.minecraft.world.item.crafting.RecipeHolder;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
@@ -46,6 +52,7 @@ import net.minecraft.world.level.material.Fluid;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import dev.architectury.fluid.FluidStack;
+import org.jetbrains.annotations.Nullable;
 import org.joml.*;
 
 import java.lang.reflect.GenericArrayType;
@@ -62,6 +69,8 @@ public class AccessorRegistries {
     private final static Map<Class<?>, IAccessor<?>> ACCESSOR_LOOKUP = new ConcurrentHashMap<>();
     private final static BiFunction<IAccessor, Class<?>, IAccessor<?>> ARRAY_ACCESSOR_LOOKUP = Util.memoize(ArrayAccessor::new);
     private final static BiFunction<IAccessor, Class<?>, IAccessor<?>> COLLECTION_ACCESSOR_LOOKUP = Util.memoize(CollectionAccessor::new);
+    private final static Map<MapAccessorKey, IAccessor<?>> MAP_ACCESSOR_LOOKUP = new ConcurrentHashMap<>();
+    private record MapAccessorKey(IAccessor<?> keyAccessor, Class<?> keyType, IAccessor<?> valueAccessor, Class<?> valueType) {}
     /**
      * Register an accessor with a given priority.
      * Lower priority accessors will be checked first.
@@ -117,7 +126,23 @@ public class AccessorRegistries {
     }
 
     public static IAccessor<?> findByClass(Class<?> clazz) {
-        IAccessor<?> result = ACCESSOR_LOOKUP.computeIfAbsent(clazz, c -> {
+        var result = findByClassOrNull(clazz);
+        if (result == null) {
+            throw new IllegalArgumentException("No payload found for class " + clazz.getName());
+        }
+        return result;
+    }
+
+    /**
+     * Non-throwing variant of {@link #findByClass}. Returns {@code null} when no accessor matches,
+     * letting the caller decide whether the absence is fatal or expected. Use this in optional /
+     * data-driven paths (e.g. node-graph constant serialization where missing accessors should
+     * gracefully degrade) — internal contracts that require an accessor should keep calling the
+     * throwing variant.
+     */
+    @Nullable
+    public static IAccessor<?> findByClassOrNull(Class<?> clazz) {
+        return ACCESSOR_LOOKUP.computeIfAbsent(clazz, c -> {
             synchronized (ACCESSOR_HOLDERS) {
                 for (AccessorHolder holder : ACCESSOR_HOLDERS) {
                     if (holder.accessor.test(c)) {
@@ -127,11 +152,6 @@ public class AccessorRegistries {
             }
             return null;
         });
-
-        if (result == null) {
-            throw new IllegalArgumentException("No payload found for class " + clazz.getName());
-        }
-        return result;
     }
 
     public static IAccessor<?> findCollectionAccessor(IAccessor<?> childAccessor, Class<?> child) {
@@ -142,34 +162,72 @@ public class AccessorRegistries {
         return ARRAY_ACCESSOR_LOOKUP.apply(childAccessor, child);
     }
 
+    public static IAccessor<?> findMapAccessor(IAccessor<?> keyAccessor, Class<?> keyType,
+                                               IAccessor<?> valueAccessor, Class<?> valueType) {
+        return MAP_ACCESSOR_LOOKUP.computeIfAbsent(
+                new MapAccessorKey(keyAccessor, keyType, valueAccessor, valueType),
+                k -> new MapAccessor(k.keyAccessor(), k.keyType(), k.valueAccessor(), k.valueType()));
+    }
+
     public static IAccessor<?> findByType(Type type) {
+        var result = findByTypeOrNull(type);
+        if (result == null) {
+            throw new IllegalArgumentException("No payload found for class " + type.getTypeName());
+        }
+        return result;
+    }
+
+    /**
+     * Non-throwing variant of {@link #findByType}. Returns {@code null} when no accessor matches
+     * the type (or any element of a container type) — caller decides whether the absence is
+     * fatal. Container types (array/map/collection) cascade: if any element type can't be
+     * resolved, the whole call returns {@code null} rather than constructing a partially-typed
+     * accessor.
+     */
+    @Nullable
+    public static IAccessor<?> findByTypeOrNull(Type type) {
         if (type instanceof GenericArrayType array) {
             var componentType = array.getGenericComponentType();
-            var childAccessor = findByType(componentType);
+            var childAccessor = findByTypeOrNull(componentType);
+            if (childAccessor == null) return null;
             var rawType = ReflectionUtils.getRawType(componentType);
-
             return findArrayAccessor(childAccessor, rawType == null ? Object.class : rawType);
         }
         var rawType = ReflectionUtils.getRawType(type);
         if (rawType != null) {
             if (rawType.isArray()) {
                 var componentType = rawType.getComponentType();
-                var childAccessor = findByType(componentType);
+                var childAccessor = findByTypeOrNull(componentType);
+                if (childAccessor == null) return null;
                 return findArrayAccessor(childAccessor, componentType);
+            }
+            if (Map.class.isAssignableFrom(rawType) && type instanceof ParameterizedType parameterizedType) {
+                if (parameterizedType.getActualTypeArguments().length == 2) {
+                    var keyTypeArg = parameterizedType.getActualTypeArguments()[0];
+                    var valueTypeArg = parameterizedType.getActualTypeArguments()[1];
+                    var keyAccessor = findByTypeOrNull(keyTypeArg);
+                    var valueAccessor = findByTypeOrNull(valueTypeArg);
+                    if (keyAccessor == null || valueAccessor == null) return null;
+                    var rawKeyType = ReflectionUtils.getRawType(keyTypeArg);
+                    var rawValueType = ReflectionUtils.getRawType(valueTypeArg);
+                    return findMapAccessor(
+                            keyAccessor, rawKeyType == null ? Object.class : rawKeyType,
+                            valueAccessor, rawValueType == null ? Object.class : rawValueType);
+                }
             }
             if (Collection.class.isAssignableFrom(rawType) && type instanceof ParameterizedType parameterizedType) {
                 if (parameterizedType.getActualTypeArguments().length == 1) {
                     var componentType = parameterizedType.getActualTypeArguments()[0];
-                    var childAccessor = findByType(componentType);
+                    var childAccessor = findByTypeOrNull(componentType);
+                    if (childAccessor == null) return null;
                     var rawComponentType = ReflectionUtils.getRawType(componentType);
 
                     return findCollectionAccessor(childAccessor, rawComponentType == null ? Object.class : rawComponentType);
                 }
             }
-            return findByClass(rawType);
+            return findByClassOrNull(rawType);
         }
-
-        throw new IllegalArgumentException("No payload found for class " + type.getTypeName());
+        return null;
     }
 
     /**
@@ -198,13 +256,7 @@ public class AccessorRegistries {
         registerAccessor(RegistryAccessor.of((Class<BlockEntityType<?>>)(Class<?>)BlockEntityType.class, BuiltInRegistries.BLOCK_ENTITY_TYPE));
         registerAccessor(CustomDirectAccessor.builder(UUID.class)
                 .codec(LDLibExtraCodecs.UUID)
-                .streamCodec(StreamCodec.of(
-                        (byteBuf, uuid) -> {
-                            byteBuf.writeLong(uuid.getMostSignificantBits());
-                            byteBuf.writeLong(uuid.getLeastSignificantBits());
-                        },
-                        byteBuf -> new UUID(byteBuf.readLong(), byteBuf.readLong())
-                ))
+                .streamCodec(UUIDUtil.STREAM_CODEC)
                 .build());
         registerAccessor(CustomDirectAccessor.builder(BlockState.class)
                 .codec(BlockState.CODEC)
@@ -238,7 +290,12 @@ public class AccessorRegistries {
                 .codec(Range.CODEC)
                 .streamCodec(Range.STREAM_CODEC)
                 .build());
-        registerAccessor(CustomDirectAccessor.builder(ResourceLocation.class, true)
+        registerAccessor(CustomDirectAccessor.builder(HDRColor.class)
+                .codec(HDRColor.CODEC)
+                .streamCodec(HDRColor.STREAM_CODEC)
+                .copyMark(HDRColor::new)
+                .build());
+        registerAccessor(CustomDirectAccessor.builder(ResourceLocation.class)
                 .codec(ResourceLocation.CODEC)
                 .streamCodec(ResourceLocation.STREAM_CODEC)
                 .build());
@@ -330,6 +387,11 @@ public class AccessorRegistries {
                 .streamCodec(BlockPos.STREAM_CODEC)
                 .copyMark(BlockPos::new)
                 .build());
+        registerAccessor(CustomDirectAccessor.builder(ChunkPos.class)
+                .codec(Codec.LONG.xmap(ChunkPos::new, ChunkPos::toLong))
+                .streamCodec(ByteBufCodecs.VAR_LONG.map(ChunkPos::new, ChunkPos::toLong))
+                .copyMark(chunkPos -> new ChunkPos(chunkPos.x, chunkPos.z))
+                .build());
         registerAccessor(CustomDirectAccessor.builder(FluidStack.class)
                 .codec(FluidStack.CODEC)
                 .streamCodec(FluidStack.STREAM_CODEC)
@@ -341,12 +403,12 @@ public class AccessorRegistries {
                 .customMark(ItemStack::copy, ItemStack::matches)
                 .build());
         if (LDLib2.isClient()) {
-            registerAccessor(CustomDirectAccessor.builder(IGuiTexture.class)
+            registerAccessor(CustomDirectAccessor.builder(IGuiTexture.class, true)
                     .codec(IGuiTexture.CODEC)
                     .streamCodec(ByteBufCodecs.fromCodec(IGuiTexture.CODEC))
                     .copyMark(IGuiTexture::copy)
                     .build());
-            registerAccessor(CustomDirectAccessor.builder(IRenderer.class)
+            registerAccessor(CustomDirectAccessor.builder(IRenderer.class, true)
                     .codec(IRenderer.CODEC)
                     .streamCodec(ByteBufCodecs.fromCodec(IRenderer.CODEC))
                     .build());
@@ -358,13 +420,21 @@ public class AccessorRegistries {
                 ).apply(instance, RecipeHolder::new)))
                 .streamCodec((StreamCodec<RegistryFriendlyByteBuf, RecipeHolder>) (Object)RecipeHolder.STREAM_CODEC)
                 .build());
-        registerAccessor(CustomDirectAccessor.builder(Recipe.class)
+        registerAccessor(CustomDirectAccessor.builder(Recipe.class, true)
                 .codec((Codec<Recipe>) (Object) Recipe.CODEC)
                 .streamCodec((StreamCodec<RegistryFriendlyByteBuf, Recipe>) (Object)Recipe.STREAM_CODEC)
                 .build());
-        registerAccessor(CustomDirectAccessor.builder(IResourcePath.class)
+        registerAccessor(CustomDirectAccessor.builder(IResourcePath.class, true)
                 .codec(IResourcePath.CODEC)
                 .streamCodec(ByteBufCodecs.fromCodec(IResourcePath.CODEC))
+                .build());
+        registerAccessor(CustomDirectAccessor.builder(UITemplate.class)
+                .codec(UITemplate.CODEC)
+                .streamCodec(UITemplate.STREAM_CODEC)
+                .build());
+        registerAccessor(CustomDirectAccessor.builder(Ingredient.class)
+                .codec(Ingredient.CODEC)
+                .streamCodec(Ingredient.CONTENTS_STREAM_CODEC)
                 .build());
 
 

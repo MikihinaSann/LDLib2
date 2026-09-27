@@ -3,15 +3,15 @@ package com.lowdragmc.lowdraglib2.gui.sync;
 import com.lowdragmc.lowdraglib2.LDLib2;
 import com.lowdragmc.lowdraglib2.gui.sync.rpc.RPCEvent;
 import com.lowdragmc.lowdraglib2.gui.ui.ModularUI;
-import com.lowdragmc.lowdraglib2.networking.LDLNetworking;
 import com.lowdragmc.lowdraglib2.networking.both.PacketModularUISync;
-import com.lowdragmc.lowdraglib2.networking.c2s.CPacketUIRPCEvent;
-import com.lowdragmc.lowdraglib2.networking.s2c.SPacketUIRPCEventReturn;
+import com.lowdragmc.lowdraglib2.networking.both.PacketUIRPCEvent;
+import com.lowdragmc.lowdraglib2.networking.both.PacketUIRPCEventReturn;
 import com.lowdragmc.lowdraglib2.utils.ByteBufUtil;
 import com.lowdragmc.lowdraglib2.utils.IdentityMap;
 import lombok.Getter;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.server.level.ServerPlayer;
+import com.lowdragmc.lowdraglib2.networking.LDLNetworking;
 import org.apache.commons.lang3.function.Consumers;
 
 import java.util.*;
@@ -68,17 +68,32 @@ public class UISyncManager {
             writePack(buf, toSync);
         }, modularUI.player.level().registryAccess());
         if (modularUI.player.level().isClientSide) {
-            com.lowdragmc.lowdraglib2.networking.LDLNetworking.sendToServer(new PacketModularUISync(data));
+            LDLNetworking.sendToServer(new PacketModularUISync(data));
         } else if (modularUI.player instanceof ServerPlayer serverPlayer) {
-            com.lowdragmc.lowdraglib2.networking.LDLNetworking.sendToPlayer(serverPlayer, new PacketModularUISync(data));
+            LDLNetworking.sendToPlayer(serverPlayer, new PacketModularUISync(data));
         }
     }
 
+    /**
+     * Writes the opening snapshot, which rides the open-screen packet.
+     *
+     * <p>Only values this side is allowed to send are included, and the filter is load-bearing. A
+     * value the receiver refuses — a C2S-only binding, on the way out to the client — is not merely
+     * ignored on arrival: {@link SyncValue#readSyncData} throws <i>before</i> consuming the payload,
+     * {@link #handlePack} swallows that and reads the next entry from the wrong offset, and the rest
+     * of the pack is lost. Both sides derive the flag from the same pair of strategies, so filtering
+     * here keeps their entry sets equal by construction. {@link #tick()} gets this for free, since
+     * {@code hasChanged()} is already false whenever {@code toSync} is.
+     */
     public void writeInitialData(RegistryFriendlyByteBuf buffer) {
+        var toSync = new ArrayList<SyncValue<?>>();
         for (SyncValue<?> value : syncValues.values()) {
             value.update();
+            if (value.isToSync()) {
+                toSync.add(value);
+            }
         }
-        writePack(buffer, syncValues.values());
+        writePack(buffer, toSync);
     }
 
     public void readInitialData(RegistryFriendlyByteBuf data) {
@@ -153,12 +168,16 @@ public class UISyncManager {
             buf.writeVarInt(requestID);
             event.writeParametersToBuffer(buf, args);
         }, player.level().registryAccess());
-        com.lowdragmc.lowdraglib2.networking.LDLNetworking.sendToServer(new CPacketUIRPCEvent(data));
+        if (player.level().isClientSide) {
+            LDLNetworking.sendToServer(new PacketUIRPCEvent(data));
+        } else if (player instanceof ServerPlayer serverPlayer) {
+            LDLNetworking.sendToPlayer(serverPlayer, new PacketUIRPCEvent(data));
+        }
     }
 
     public void handEvent(RegistryFriendlyByteBuf buf) {
         var player = modularUI.player;
-        if (!(player instanceof ServerPlayer serverPlayer)) throw new IllegalStateException("Cannot send event to non server player");
+        if (player == null) return;
 
         var eventID = buf.readVarInt();
         var response = buf.readBoolean();
@@ -182,7 +201,11 @@ public class UISyncManager {
                 returnBuf.writeVarInt(requestID);
                 rpcEvent.writeReturnValueToBuffer(returnBuf, returnValue);
             }, player.level().registryAccess());
-            com.lowdragmc.lowdraglib2.networking.LDLNetworking.sendToPlayer(serverPlayer, new SPacketUIRPCEventReturn(data));
+            if (player.level().isClientSide) {
+                LDLNetworking.sendToServer(new PacketUIRPCEventReturn(data));
+            } else if (player instanceof ServerPlayer serverPlayer) {
+                LDLNetworking.sendToPlayer(serverPlayer, new PacketUIRPCEventReturn(data));
+            }
         }
     }
 

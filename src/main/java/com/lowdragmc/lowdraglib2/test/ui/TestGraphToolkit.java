@@ -6,23 +6,27 @@ import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.graph.Graph;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.GraphView;
+import com.lowdragmc.lowdraglib2.registry.annotation.LDLRegister;
 import com.lowdragmc.lowdraglib2.registry.annotation.LDLRegisterClient;
+import com.lowdragmc.lowdraglib2.test.noddegraphtoolkit.OptionTestNode;
 import com.lowdragmc.lowdraglib2.test.noddegraphtoolkit.TestAddNode;
 import com.lowdragmc.lowdraglib2.test.noddegraphtoolkit.TestConstantNode;
+import com.lowdragmc.lowdraglib2.test.noddegraphtoolkit.TestDescriptionNode;
 import com.lowdragmc.lowdraglib2.test.noddegraphtoolkit.TestGraph;
 import com.lowdragmc.lowdraglib2.test.noddegraphtoolkit.TestStringConcatNode;
 import lombok.NoArgsConstructor;
 import net.minecraft.world.entity.player.Player;
+import org.jetbrains.annotations.NotNull;
 import org.joml.Vector2f;
 
-@LDLRegisterClient(name="graph_toolkit", registry = "ldlib2:screen_test")
+@LDLRegister(name="graph_toolkit", registry = "ldlib2:menu_test")
 @NoArgsConstructor
-public class TestGraphToolkit implements IScreenTest {
+public class TestGraphToolkit implements IMenuTest {
     @Override
-    public ModularUI createUI(Player entityPlayer) {
+    public ModularUI createUI(@NotNull Player entityPlayer) {
         var root = new UIElement();
         root.layout(layout -> {
-            layout.widthPercent(100);
+            layout.widthPercent(75);
             layout.heightPercent(100);
             layout.paddingAll(4);
         }).setId("root").getStyle().backgroundTexture(Sprites.BORDER);
@@ -32,7 +36,7 @@ public class TestGraphToolkit implements IScreenTest {
             layout.heightPercent(100);
         }));
         graphEditor.loadGraph(createTestGraph());
-        return new ModularUI(UI.of(root));
+        return new ModularUI(UI.of(root), entityPlayer);
     }
 
     public static Graph createTestGraph() {
@@ -41,6 +45,8 @@ public class TestGraphToolkit implements IScreenTest {
         graph.graphModel.createVariable("test_v", Float.class, 10f, null);
         // nodes
         graph.graphModel.createNodeModel(new TestStringConcatNode(), new Vector2f(200, 200));
+        graph.graphModel.createNodeModel(new OptionTestNode(), new Vector2f(350, 0));
+        graph.graphModel.createNodeModel(new TestDescriptionNode(), new Vector2f(350, 150));
         var constant = graph.graphModel.createNodeModel(new TestConstantNode(), new Vector2f(0));
         var add1 = graph.graphModel.createNodeModel(new TestAddNode(), new Vector2f(50));
         var add2 = graph.graphModel.createNodeModel(new TestAddNode(), new Vector2f(150));

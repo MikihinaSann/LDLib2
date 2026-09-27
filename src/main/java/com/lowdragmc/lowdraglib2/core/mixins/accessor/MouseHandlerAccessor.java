@@ -7,7 +7,8 @@ import org.spongepowered.asm.mixin.gen.Accessor;
 /**
  * @author KilaBash
  * @date 2023/7/1
- * @implNote MouseHandlerMixin
+ * @implNote MouseHandlerAccessor. Behavioural changes live in
+ *           {@link com.lowdragmc.lowdraglib2.core.mixins.ui.MouseHandlerMixin}.
  * @port ELB_GG 
  * @date_port 2026/03/29 
  * @port_to fabric
@@ -15,4 +16,10 @@ import org.spongepowered.asm.mixin.gen.Accessor;
 @Mixin(MouseHandler.class)
 public interface MouseHandlerAccessor {
     @Accessor int getActiveButton();
+
+    /**
+     * So a scripted run that starts inside an already-grabbed game can drop the grab without
+     * {@code releaseMouse}'s warp of the physical pointer to the window centre.
+     */
+    @Accessor("mouseGrabbed") void setMouseGrabbed(boolean grabbed);
 }

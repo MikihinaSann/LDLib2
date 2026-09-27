@@ -7,6 +7,7 @@ import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvent;
 import com.lowdragmc.lowdraglib2.gui.ui.rendering.GUIContext;
 import com.lowdragmc.lowdraglib2.gui.ui.style.PropertyRegistry;
 import com.lowdragmc.lowdraglib2.registry.annotation.LDLRegister;
+import com.lowdragmc.lowdraglib2.gui.ui.utils.KeyState;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.experimental.Accessors;
@@ -83,7 +84,7 @@ public class CodeEditor extends TextArea {
             switch (event.keyCode) {
                 case GLFW.GLFW_KEY_TAB -> insertText("  ");
                 case GLFW.GLFW_KEY_SLASH -> {
-                    if (Screen.hasControlDown()) {
+                    if (KeyState.isCtrlDown()) {
                         toggleCommentAtBol();
                     }
                 }
@@ -238,7 +239,8 @@ public class CodeEditor extends TextArea {
                 guiContext.pose.pushPose();
                 guiContext.pose.translate(drawX, lineY, 0);
                 guiContext.pose.scale(scale, scale, 1);
-                guiContext.graphics.drawString(
+                LDLibFonts.drawText(
+                        guiContext.graphics,
                         font,
                         textComponent,
                         0,
@@ -257,5 +259,38 @@ public class CodeEditor extends TextArea {
         if (styledLines.isEmpty() || (styledLines.size() == 1 && styledLines.getFirst().text().isEmpty())) {
             drawPlaceHolder(guiContext, font, scale, x, y);
         }
+    }
+
+    /**
+     * Build the styled content of a range from the syntax-highlighted segments, using the exact same styling
+     * applied in {@link #drawLines} (font + per-segment style). This keeps caret/selection widths aligned with
+     * the rendered text even when segments are bold.
+     */
+    @Override
+    @Environment(EnvType.CLIENT)
+    protected Component styledLineComponent(int line, int from, int to) {
+        var styled = getStyledLines();
+        if (line < 0 || line >= styled.size()) {
+            return super.styledLineComponent(line, from, to);
+        }
+        var font = getTextAreaStyle().font();
+        var result = Component.empty();
+        int pos = 0;
+        for (StyledText seg : styled.get(line).text()) {
+            var segText = seg.text();
+            int segStart = pos;
+            int segEnd = pos + segText.length();
+            int a = Math.max(from, segStart);
+            int b = Math.min(to, segEnd);
+            if (a < b) {
+                var sub = segText.substring(a - segStart, b - segStart);
+                result.append(Component.literal(sub)
+                        .withStyle(style -> style.withFont(font))
+                        .withStyle(seg.style()));
+            }
+            pos = segEnd;
+            if (pos >= to) break;
+        }
+        return result;
     }
 }

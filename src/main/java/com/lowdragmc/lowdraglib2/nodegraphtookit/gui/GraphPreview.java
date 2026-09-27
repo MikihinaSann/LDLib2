@@ -1,26 +1,27 @@
 package com.lowdragmc.lowdraglib2.nodegraphtookit.gui;
 
+import com.lowdragmc.lowdraglib2.gui.ui.Style;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvent;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
 import com.lowdragmc.lowdraglib2.gui.ui.rendering.GUIContext;
 import com.lowdragmc.lowdraglib2.gui.util.DrawerHelper;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.node.NodeElement;
-import com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.AbstractNodeModel;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.util.NodeColors;
 import net.minecraft.network.chat.Component;
 import org.jetbrains.annotations.NotNull;
 
 public class GraphPreview extends UIElement implements IGraphTool {
     private static final float PADDING = 20f;
     private static final int HIGHLIGHT_COLOR = 0xFF_4488FF;
-    private static final int DEFAULT_NODE_COLOR = 0xFF_555555;
     private static final int VIEWPORT_BORDER_COLOR = 0x88_FFFFFF;
 
     public final GraphView graphView;
 
     public GraphPreview(GraphView graphView) {
         this.graphView = graphView;
-        this.getLayout().widthPercent(100).heightPercent(100);
+        addClass("__graph-preview__");
+        Style.defaultPipeline(getLayout(), l -> l.widthPercent(100).heightPercent(100));
         addEventListener(UIEvents.MOUSE_DOWN, this::onMouseDown);
         addEventListener(UIEvents.DRAG_SOURCE_UPDATE, this::onDragUpdate);
     }
@@ -64,16 +65,54 @@ public class GraphPreview extends UIElement implements IGraphTool {
 
         // Center the view on this world position
         var gv = graphView.graphView;
-        float newOffsetX = worldX - (gv.getContentWidth() / gv.getScale()) / 2f;
-        float newOffsetY = worldY - (gv.getContentHeight() / gv.getScale()) / 2f;
+        float vpW = gv.getContentWidth() / gv.getScale();
+        float vpH = gv.getContentHeight() / gv.getScale();
+        float newOffsetX = worldX - vpW / 2f;
+        float newOffsetY = worldY - vpH / 2f;
+
+        // Clamp so the viewport rect always intersects the nodes' bounding rect.
+        var nodes = computeNodesBounds();
+        if (nodes != null) {
+            newOffsetX = Math.max(nodes.minX - vpW, Math.min(nodes.maxX, newOffsetX));
+            newOffsetY = Math.max(nodes.minY - vpH, Math.min(nodes.maxY, newOffsetY));
+        }
+
         gv.setOffsetX(newOffsetX);
         gv.setOffsetY(newOffsetY);
         // Update the content transform to reflect the new offset
         float s = gv.getScale();
+        float tx = newOffsetX * s;
+        float ty = newOffsetY * s;
         gv.contentRoot.transform(transform -> transform
-                .translate(-(newOffsetX * s), -(newOffsetY * s))
+                .translate(-tx, -ty)
                 .scale(s)
         );
+    }
+
+    private Bounds computeNodesBounds() {
+        var nodeLayer = graphView.getLayer(NodeElement.NODE_LAYER);
+        if (nodeLayer == null || nodeLayer.getChildren().isEmpty()) return null;
+
+        float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE;
+        float maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
+        boolean hasNodes = false;
+
+        for (var child : nodeLayer.getChildren()) {
+            if (child instanceof NodeElement nodeElement) {
+                var model = nodeElement.getModel();
+                float x = model.getPosition().x;
+                float y = model.getPosition().y;
+                float w = nodeElement.getSizeWidth();
+                float h = nodeElement.getSizeHeight();
+
+                minX = Math.min(minX, x);
+                minY = Math.min(minY, y);
+                maxX = Math.max(maxX, x + w);
+                maxY = Math.max(maxY, y + h);
+                hasNodes = true;
+            }
+        }
+        return hasNodes ? new Bounds(minX, minY, maxX, maxY) : null;
     }
 
     @Override
@@ -111,7 +150,7 @@ public class GraphPreview extends UIElement implements IGraphTool {
                     float rw = nodeW * minimapScale;
                     float rh = nodeH * minimapScale;
 
-                    int color = getNodeColor(model);
+                    int color = NodeColors.resolve(model);
                     DrawerHelper.drawSolidRect(guiContext.graphics, rx, ry, rw, rh, color);
 
                     if (graphView.isSelected(model)) {
@@ -136,22 +175,6 @@ public class GraphPreview extends UIElement implements IGraphTool {
         DrawerHelper.drawBorder(guiContext.graphics, vrx, vry, vrw, vrh, VIEWPORT_BORDER_COLOR, 1);
 
         guiContext.disableScissor();
-    }
-
-    private int getNodeColor(AbstractNodeModel model) {
-        int color;
-        if (model.hasUserColor()) {
-            color = model.getElementColor();
-        } else {
-            color = model.getDefaultColor();
-        }
-        // Ensure fully opaque and not transparent/zero
-        if ((color & 0xFF000000) == 0) {
-            color = DEFAULT_NODE_COLOR;
-        } else if ((color & 0xFF000000) != 0xFF000000) {
-            color = (color & 0x00FFFFFF) | 0xFF000000;
-        }
-        return color;
     }
 
     private record Bounds(float minX, float minY, float maxX, float maxY) {}

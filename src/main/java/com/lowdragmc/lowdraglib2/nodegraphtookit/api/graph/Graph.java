@@ -3,11 +3,15 @@ package com.lowdragmc.lowdraglib2.nodegraphtookit.api.graph;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.node.INode;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.node.Node;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.type.TypeHandle;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.api.type.TypeHandleHelpers;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.variable.IVariable;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.api.variable.VariableKind;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.command.IGraphCommand;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.graph.CustomGraphModelImpl;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
+import java.util.Set;
 
 /**
  * Represents the core definition of a graph and defines its behavior.
@@ -23,8 +27,7 @@ public abstract class Graph implements IGraph {
     /**
      * Retrieves a list of supported node types in the graph.
      * <p>
-     * Typically backed by an {@link com.lowdragmc.lowdraglib2.registry.AutoRegistry} created via
-     * {@link com.lowdragmc.lowdraglib2.registry.AutoRegistry#createNodeRegistry}.
+     * Typically backed with {@link GraphNodeRegistry#getNodeClasses}
      *
      * @return a {@link List} of {@code Class} objects representing the supported node types
      */
@@ -33,11 +36,129 @@ public abstract class Graph implements IGraph {
     /**
      * Retrieves a list of supported types for the graph.
      *
+     * <p>Overriding this <em>replaces</em> auto-detection rather than extending it. To keep
+     * detection as the floor and only add to it, union it in yourself:
+     * {@code new HashSet<>(CustomGraphModelImpl.detectSupportedTypes(graphModel))} plus whatever the
+     * pickers should offer before any node carries it.</p>
+     *
      * @return a {@link List} of {@link TypeHandle} objects representing the supported types,
      * or {@code null} if no specific types are explicitly supported, it will be automatically detected by nodes ports.
      */
     public @Nullable List<TypeHandle> getSupportTypes() {
         return null;
+    }
+
+    /**
+     * Whether this graph accepts a graph of {@code other}'s type as a subgraph — either imported as
+     * an external reference (dragging another graph resource in) or embedded as an inline local
+     * subgraph of a different type.
+     *
+     * <p>Defaults to {@code false}: only same-type subgraphs are allowed (same-type embedding is
+     * handled independently and is always permitted). Override to opt into cross-type subgraphs,
+     * e.g. {@code return other instanceof MaterialGraph;} to let a shader graph embed material
+     * graphs.</p>
+     *
+     * @param other the candidate inner graph (a fresh instance of the would-be subgraph type)
+     * @return {@code true} to allow {@code other}'s type as a subgraph of this graph
+     */
+    public boolean acceptsSubgraphGraph(Graph other) {
+        return false;
+    }
+
+    /**
+     * Vetoes an editor command before it executes. Returns {@code true} (default) to allow.
+     *
+     * <p>Every mutating editor action — delete, move, paste, duplicate, rename, color, create
+     * node/wire/placemat/subgraph, etc. — runs as an {@link IGraphCommand} through
+     * {@code GraphView.dispatchCommand}, which consults this method first. Inspect the command to
+     * gate specific operations, e.g.:
+     * <pre>{@code
+     * if (command instanceof GraphCommands.DeleteElementsCommand del)
+     *     return del.elementsToDelete.stream().noneMatch(this::isProtected);
+     * }</pre>
+     * For "this single element can never be deleted while others still can", prefer turning off the
+     * element's {@code Capabilities.DELETABLE} instead (filtered at the selection source).</p>
+     *
+     * @param command the command about to execute
+     * @return {@code true} to allow, {@code false} to block
+     */
+    public boolean canExecuteCommand(IGraphCommand command) {
+        return true;
+    }
+
+    /**
+     * Called after an editor command has executed (default no-op). Use it to react to applied
+     * edits — custom side effects, analytics, extra dirty-tracking, etc.
+     *
+     * @param command the command that just executed
+     */
+    public void onCommandExecuted(IGraphCommand command) {
+    }
+
+    /**
+     * Called by {@link com.lowdragmc.lowdraglib2.nodegraphtookit.gui.GraphView} after the editor's
+     * current graph state has been loaded or refreshed. Use this hook to emit validation errors,
+     * warnings, or informational diagnostics for the graph footer.
+     *
+     * <p>This is an editor diagnostic hook only. Messages are runtime UI state and are not
+     * serialized with the graph.</p>
+     *
+     * @param logger collector for diagnostics to show in the graph view
+     */
+    public void onGraphChanged(GraphLogger logger) {
+    }
+
+    /**
+     * Retrieves node types shown in the item library.
+     *
+     * @return a {@link List} of node types available through the library UI.
+     */
+    public List<Class<? extends Node>> getLibrarySupportNodes() {
+        return getSupportNodes();
+    }
+
+    /**
+     * Retrieves type handles shown as constant nodes in the item library.
+     *
+     * <h2>Why the default is no longer {@link #getSupportTypes()}</h2>
+     * A type belongs in the type pickers as soon as a port can carry it, but it only belongs here if
+     * a literal of it can be <em>authored</em> — and that is a property of the type, not of the node
+     * set. Chaining the two offered a draggable constant for every wire-only type in the graph
+     * ({@code Level}, {@code Entity}, …): the node spawns, renders an empty inspector row and emits
+     * null. Offering a node that cannot do anything is worse than not offering it.
+     *
+     * <p>The default now filters the supported set through
+     * {@link TypeHandleHelpers#canAuthorLiteral}. Override to make a cut that predicate cannot
+     * express — a width-polymorphic vector handle whose constant has no meaningful width, a type
+     * with a default but no configurator widget, or a graph that would rather the user reached for a
+     * dedicated node than a bare constant.</p>
+     *
+     * @return a {@link List} of type handles available through the library UI,
+     * or {@code null} to use the authorable subset of the graph's supported types.
+     */
+    public @Nullable List<TypeHandle> getLibrarySupportTypes() {
+        return null;
+    }
+
+    /**
+     * Retrieves type handles shown when creating or editing blackboard variables.
+     *
+     * @return a {@link List} of type handles available for variables,
+     * or {@code null} to use the graph's supported types.
+     */
+    public @Nullable List<TypeHandle> getVariableSupportTypes() {
+        return getSupportTypes();
+    }
+
+    /**
+     * Retrieves the variable kinds that may be exposed as ports when this graph is used as a subgraph.
+     *
+     * <p>Return an empty set to disable variable-backed subgraph ports entirely, or return only
+     * {@link VariableKind#INPUT} / {@link VariableKind#OUTPUT} to allow one direction. Local
+     * variables are always allowed and are not controlled by this API.</p>
+     */
+    public Set<VariableKind> getSupportedSubgraphVariableKinds() {
+        return Set.of(VariableKind.INPUT, VariableKind.OUTPUT);
     }
 
     /**

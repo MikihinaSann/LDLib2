@@ -2,6 +2,7 @@ package com.lowdragmc.lowdraglib2.nodegraphtookit.model.graph;
 
 import com.lowdragmc.lowdraglib2.LDLib2;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.graph.Graph;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.api.graph.GraphLogger;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.node.*;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.type.TypeHandle;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.type.TypeHandleHelpers;
@@ -15,12 +16,14 @@ import com.lowdragmc.lowdraglib2.nodegraphtookit.model.variable.VariableDeclarat
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.variable.VariableScope;
 import com.lowdragmc.lowdraglib2.utils.TypeUtils;
 import lombok.Getter;
+import net.minecraft.network.chat.Component;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Vector2f;
 
 import java.lang.reflect.Type;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 public class CustomGraphModelImpl extends GraphModel {
@@ -61,18 +64,79 @@ public class CustomGraphModelImpl extends GraphModel {
         }
     }
 
+    @Override
+    public List<Class<? extends Node>> getLibrarySupportNodes() {
+        return graph.getLibrarySupportNodes();
+    }
+
+    /**
+     * Defaults to the authorable subset of {@link #getSupportTypes()}, not the whole thing — a
+     * wire-only type has no literal to drag in. See {@link Graph#getLibrarySupportTypes()}.
+     */
+    @Override
+    public List<TypeHandle> getLibrarySupportTypes() {
+        var types = graph.getLibrarySupportTypes();
+        return types == null ? TypeHandleHelpers.authorableTypes(getSupportTypes()) : types;
+    }
+
+    @Override
+    public List<TypeHandle> getVariableSupportTypes() {
+        var types = graph.getVariableSupportTypes();
+        return types == null ? getSupportTypes() : types;
+    }
+
+    @Override
+    public Set<VariableKind> getSupportedSubgraphVariableKinds() {
+        return graph.getSupportedSubgraphVariableKinds();
+    }
+
+    /**
+     * Cached per graph type — the answer depends only on {@link GraphModel#getSupportNodes()}, which
+     * is a constant of the graph class, never of the instance being asked.
+     */
+    private static final Map<Class<?>, List<TypeHandle>> SUPPORTED_TYPES = new ConcurrentHashMap<>();
+
+    /**
+     * Every type a port of this kind of graph can carry, found by instantiating each registered node
+     * class and reading its ports.
+     *
+     * <h2>Cached, and isolated from the graph it is asked about</h2>
+     * This is a query, but the only way to answer it is to build one of everything — several hundred
+     * nodes and several thousand ports for a graph whose registry is large. Two things follow, and
+     * both were live bugs:
+     *
+     * <ul>
+     *   <li>The probe nodes are spawned orphaned and discarded, but their ports were still reported
+     *       through the model's change description, so a single call queued thousands of new models
+     *       for a view that has no elements for them. {@link GraphModel#withIsolatedChanges} keeps
+     *       that churn off the live change set.</li>
+     *   <li>Callers include the blackboard's variable-type picker, whose search runs on a background
+     *       thread ({@code SearchEngine}). Building models there raced the render thread's
+     *       {@code GraphView.updateGraphModelChanges}, corrupting the change set's {@code HashSet} —
+     *       a {@code ConcurrentModificationException} or a {@code toArray} overflow, both of which
+     *       took down the screen. Caching means the probe runs once, and
+     *       {@link java.util.concurrent.ConcurrentHashMap#computeIfAbsent} serialises even that.</li>
+     * </ul>
+     *
+     * <p>Keyed by the {@code Graph}'s class where there is one: two graph types can share a model
+     * class ({@code CustomGraphModelImpl}) while registering completely different node sets.</p>
+     */
     public static List<TypeHandle> detectSupportedTypes(GraphModel graphModel) {
+        var key = graphModel instanceof CustomGraphModelImpl custom && custom.getGraph() != null
+                ? custom.getGraph().getClass()
+                : graphModel.getClass();
+        return SUPPORTED_TYPES.computeIfAbsent(key, ignored ->
+                graphModel.withIsolatedChanges(() -> probeSupportedTypes(graphModel)));
+    }
+
+    private static List<TypeHandle> probeSupportedTypes(GraphModel graphModel) {
         var foundTypes = new HashSet<TypeHandle>();
         var nodeCreationData = GraphNodeCreationData.ofOrphan(graphModel);
-        // load nodes
+        // Iterate every registered node type (regular, context, AND block) — getNodeImplType
+        // selects the right model class per nodeType, and we harvest port types uniformly.
+        // Block classes appear here too because they're @NodeAttribute-registered, so their
+        // port types are picked up automatically without a special context-traversal step.
         for (var nodeType : graphModel.getSupportNodes()) {
-            // todo context node
-//            if (typeof(ContextNode).IsAssignableFrom(type))
-//            {
-//                InitializeSupportedTypesFromContextNodeType(m_Graph.GetType(), nodeCreationData, type, supportedTypes);
-//                createdElement = (IUserNodeModelImp)(CreateContextNodeFromData(nodeCreationData, type) as ContextNodeModel);
-//            }
-//            else
             var createdElement = createNodeFromData(nodeCreationData, nodeType);
             if (createdElement instanceof ICustomNodeModel customNodeModel) {
                 getPortTypesFromNode(customNodeModel.getNode(), foundTypes);
@@ -123,13 +187,20 @@ public class CustomGraphModelImpl extends GraphModel {
         });
     }
 
+    @SuppressWarnings("unchecked")
     public static <T extends AbstractNodeModel & ICustomNodeModel> Class<T> getNodeImplType(Class<? extends Node> nodeType) {
-//        if (ContextNode.IsAssignableFrom(nodeType)) {
-//            return typeof(UserContextNodeModelImp);
-//        } if (typeof(BlockNode).IsAssignableFrom(nodeType)) {
-//            return typeof(UserBlockNodeModelImp);
-//        }
+        if (ContextNode.class.isAssignableFrom(nodeType)) {
+            return (Class<T>) CustomContextNodeModelImpl.class;
+        }
+        if (BlockNode.class.isAssignableFrom(nodeType)) {
+            return (Class<T>) CustomBlockNodeModelImpl.class;
+        }
         return (Class<T>) CustomNodeModelImpl.class;
+    }
+
+    @Override
+    protected void onNodeModelsReset() {
+        nodes = null;
     }
 
     public List<? extends INode> getNodes() {
@@ -203,7 +274,10 @@ public class CustomGraphModelImpl extends GraphModel {
     }
 
     public IVariable createVariable(String name, TypeHandle valueType, @Nullable Object defaultValue, @Nullable VariableKind kind) {
-        if (kind == null) kind = VariableKind.LOCAL;
+        var variableKind = kind == null ? VariableKind.LOCAL : kind;
+        if (variableKind != VariableKind.LOCAL && !supportsSubgraphVariableKind(variableKind)) {
+            variableKind = VariableKind.LOCAL;
+        }
         var constant = createConstantValue(valueType);
         if (defaultValue != null) {
             constant.setDefaultValue(defaultValue);
@@ -213,8 +287,8 @@ public class CustomGraphModelImpl extends GraphModel {
         return createGraphVariableDeclaration(
                 valueType,
                 name,
-                kind == VariableKind.INPUT ? ModifierFlags.READ : (kind == VariableKind.OUTPUT ? ModifierFlags.WRITE : ModifierFlags.NONE),
-                kind != VariableKind.LOCAL ? VariableScope.EXPOSED : VariableScope.LOCAL,
+                variableKind == VariableKind.INPUT ? ModifierFlags.READ : (variableKind == VariableKind.OUTPUT ? ModifierFlags.WRITE : ModifierFlags.NONE),
+                variableKind != VariableKind.LOCAL ? VariableScope.EXPOSED : VariableScope.LOCAL,
                 null,
                 Integer.MAX_VALUE,
                 constant,
@@ -226,5 +300,45 @@ public class CustomGraphModelImpl extends GraphModel {
     public boolean variableDeclarationRequiresInitialization(VariableDeclarationModelBase decl) {
         // We want all variables to have a default value field.
         return true;
+    }
+
+    @Override
+    public boolean canExecuteCommand(com.lowdragmc.lowdraglib2.nodegraphtookit.gui.command.IGraphCommand command) {
+        return graph.canExecuteCommand(command);
+    }
+
+    @Override
+    public void onCommandExecuted(com.lowdragmc.lowdraglib2.nodegraphtookit.gui.command.IGraphCommand command) {
+        graph.onCommandExecuted(command);
+    }
+
+    @Override
+    public void onGraphChanged(GraphLogger logger) {
+        super.onGraphChanged(logger); // built-in diagnostics (missing ports)
+        graph.onGraphChanged(logger);
+    }
+
+    @Override
+    public CustomGraphModelImpl createLocalSubgraphInstance() {
+        return createLocalSubgraphInstance(graph.getClass());
+    }
+
+    @Override
+    public CustomGraphModelImpl createLocalSubgraphInstance(@Nullable Class<? extends Graph> graphType) {
+        var type = graphType != null ? graphType : graph.getClass();
+        try {
+            var newGraph = type.getDeclaredConstructor().newInstance();
+            // Same-type subgraphs are always allowed; cross-type must be opted into by the host
+            // graph via acceptsSubgraphGraph.
+            if (type != graph.getClass() && !graph.acceptsSubgraphGraph(newGraph)) {
+                LDLib2.LOGGER.warn("Graph type {} does not accept subgraph of type {}",
+                        graph.getClass().getName(), type.getName());
+                return null;
+            }
+            return newGraph.graphModel;
+        } catch (Exception e) {
+            LDLib2.LOGGER.error("Failed to instantiate local subgraph of type {}", type.getName(), e);
+            return null;
+        }
     }
 }

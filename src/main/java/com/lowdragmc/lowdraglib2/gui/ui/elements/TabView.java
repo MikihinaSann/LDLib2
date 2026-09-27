@@ -77,6 +77,7 @@ public class TabView extends UIElement {
 
         this.tabContentContainer.layout(layout -> {
             layout.paddingAll(5);
+            layout.flexGrow(1);
         }).style(style -> style.backgroundTexture(Sprites.BORDER_THICK_RT1));
 
         addChildren(tabContentContainer, tabHeaderContainer);
@@ -98,14 +99,27 @@ public class TabView extends UIElement {
             }
         });
         content.setDisplay(false);
-        tabScroller.addScrollViewChildAt(tab, index);
-        tabContentContainer.addChildAt(content, index);
+        tabScroller.addScrollViewChildAt(tab, clampIndex(index, tabScroller.viewContainer));
+        tabContentContainer.addChildAt(content, clampIndex(index, tabContentContainer));
         tabContents.put(tab, content);
         tab.setTabView(this);
         if (selectedTab == null) {
             selectTab(tab);
         }
         return this;
+    }
+
+    /**
+     * Where a tab's index lands in one particular container.
+     *
+     * <p>{@link #addTab} works out one index from how many tabs there are, then applies it to two
+     * containers that need not hold the same number of children: a caller can move a header out of the
+     * scroller to pin it above the ones that scroll. An index past the end is an exception rather than
+     * an append, so it is brought back to the end here — and off the bottom, which nothing sensible
+     * asks for but a negative {@code index} argument can still produce.
+     */
+    private static int clampIndex(int index, UIElement container) {
+        return Math.max(0, Math.min(index, container.getChildren().size()));
     }
 
     public TabView removeTab(Tab tab) {
@@ -115,7 +129,11 @@ public class TabView extends UIElement {
         }
         var content = tabContents.remove(tab);
         if (content != null) {
-            tabScroller.removeScrollViewChild(tab);
+            // Not necessarily in the scroller: a header can have been moved elsewhere to pin it, so
+            // fall back to detaching it from wherever it actually ended up.
+            if (!tabScroller.removeScrollViewChild(tab)) {
+                tab.removeSelf();
+            }
             tabContentContainer.removeChild(content);
         }
         tab.setSelected(false);

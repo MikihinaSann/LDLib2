@@ -22,7 +22,7 @@ public class PlacematModel extends GraphElementModel implements IMovable, IHasNa
     @Persisted @Getter
     private String name = "Placemat";
     @Persisted @Getter
-    private int elementColor = 0xaa2E2E2E;
+    private int elementColor = 0x90606aee;
     @Persisted @Getter
     private boolean userColor = false;
     @Persisted @Getter
@@ -88,6 +88,15 @@ public class PlacematModel extends GraphElementModel implements IMovable, IHasNa
     @Override
     public boolean hasUserColor() {
         return userColor;
+    }
+
+    @Override
+    public void resetColor() {
+        if (!userColor) return;
+        userColor = false;
+        elementColor = getDefaultColor();
+        GraphModel gm = getGraphModel();
+        if (gm != null) gm.getCurrentGraphChangeDescription().addChangedModel(this, ChangeHint.STYLE);
     }
 
     public void setZOrder(int value) {

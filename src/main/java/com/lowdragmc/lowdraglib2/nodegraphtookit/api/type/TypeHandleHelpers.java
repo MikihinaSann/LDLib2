@@ -1,17 +1,18 @@
 package com.lowdragmc.lowdraglib2.nodegraphtookit.api.type;
 
 import com.lowdragmc.lowdraglib2.LDLib2;
-import com.lowdragmc.lowdraglib2.gui.ColorPattern;
 import com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture;
 import com.lowdragmc.lowdraglib2.utils.ColorUtils;
 import lombok.experimental.UtilityClass;
 import org.jetbrains.annotations.Nullable;
 
 import java.lang.reflect.Type;
-import java.nio.charset.StandardCharsets;
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 @UtilityClass
 public final class TypeHandleHelpers {
@@ -25,7 +26,8 @@ public final class TypeHandleHelpers {
     private static final Map<String, Integer> CUSTOM_ID_TO_COLOR = new ConcurrentHashMap<>();// customId -> Color
     // customId -> ICON
     private static final Map<String, IGuiTexture> CUSTOM_ID_TO_ICON = new ConcurrentHashMap<>();
-
+    // customId -> Default Value Supplier
+    private static final Map<String, Supplier<Object>> CUSTOM_ID_TO_DEFAULT_VALUE = new ConcurrentHashMap<>();
 
     /**
      * GenerateCustomTypeHandle(uniqueId, friendlyName)
@@ -109,10 +111,17 @@ public final class TypeHandleHelpers {
         }
     }
 
+    public static void setCustomDefaultValue(TypeHandle typeHandle, Supplier<Object> defaultValue) {
+        var id = typeHandle.getIdentification();
+        if (id != null) {
+            CUSTOM_ID_TO_DEFAULT_VALUE.put(id, defaultValue);
+        }
+    }
+
     /**
      * GenerateTypeHandle(Type t, friendlyName)
      */
-    public static TypeHandle fromType(Type t, String friendlyName) {
+    public static TypeHandle fromType(Type t, @Nullable String friendlyName) {
         t = convertType(t);
         Objects.requireNonNull(t, "t");
         var identification = identificationOf(t);
@@ -144,10 +153,68 @@ public final class TypeHandleHelpers {
         return fromType(type, null);
     }
 
+    /**
+     * Whether a literal of this type can be authored — i.e. whether a constant node of it would hold
+     * a value, rather than spawn, show nothing and emit {@code null}.
+     *
+     * <h2>Why this is a predicate and not a hand-written list</h2>
+     * "A port can carry it" and "a user can type one in" are different questions, and only the first
+     * is answerable from the graph's node set — so a graph cannot derive the second from its nodes,
+     * and used to answer it by listing types by hand instead. That list is only ever as correct as
+     * the last person who remembered to edit it: it omits a type that was minted after it was
+     * written, and it keeps offering a broken node for a type that lost what made it authorable.
+     *
+     * <h2>Why the test is the default value and not the configurator registry</h2>
+     * The question one <em>wants</em> to ask is "would {@link ITypeConfigurable#DEFAULT} find a
+     * widget for this type", and it cannot be asked from here. It bottoms out in
+     * {@link com.lowdragmc.lowdraglib2.configurator.ConfiguratorAccessors}, whose registry field is
+     * {@code @Environment(EnvType.CLIENT)}; off the client that is not a graceful miss but a
+     * {@code NoSuchFieldError}, and a graph's supported types are read on both sides.
+     *
+     * <p>A registered default value is the common-side stand-in, and it is a real signal rather than
+     * a coincidence: every path that builds a constant editor seeds it from
+     * {@link TypeHandle#getDefaultValue()}, so a handle without one either dereferences null while
+     * building the row (accessor-backed types) or shows a plausible first value it never writes back
+     * (enums through {@code SelectorConfigurator}). Registering a default is the act by which an
+     * author says "a constant of this is a thing a user can hold", which is the question.</p>
+     *
+     * <p>It is also what keeps {@code List}/{@code Map} out, where a widget-based test would let them
+     * in: a raw collection does resolve to a {@code CollectionConfiguratorAccessor}, but a handle
+     * registered without a default has nothing to put in it and serialising the empty constant
+     * fails.</p>
+     *
+     * <p>The gap this leaves is a type that has a default but no widget — it renders an empty
+     * inspector row, and only a client can tell. {@code ChunkPos} is the one live instance: syncdata
+     * accessor and default value, no configurator accessor. Until one is written, a graph that would
+     * otherwise offer it has to cut it by hand.</p>
+     *
+     * @param typeHandle the handle to test; {@code null} is not authorable
+     * @return {@code true} if a constant of this type would carry a value
+     */
+    public static boolean canAuthorLiteral(@Nullable TypeHandle typeHandle) {
+        return typeHandle != null && typeHandle.getDefaultValue() != null;
+    }
+
+    /**
+     * {@code types} narrowed to the ones a user can author a literal of, order preserved.
+     *
+     * @see #canAuthorLiteral(TypeHandle)
+     */
+    public static List<TypeHandle> authorableTypes(@Nullable Collection<TypeHandle> types) {
+        if (types == null) return List.of();
+        return types.stream().filter(TypeHandleHelpers::canAuthorLiteral).toList();
+    }
+
     static Type resolveType(TypeHandle th) {
         String id = (th != null) ? th.getIdentification() : null;
         if (id == null) return TypeHandles.Unknown.class;
-        return ID_TO_TYPE.getOrDefault(id, TypeHandles.Unknown.class);
+        return ID_TO_TYPE.computeIfAbsent(id, key -> {
+            try {
+                return Class.forName(key, false, TypeHandleHelpers.class.getClassLoader());
+            } catch (ClassNotFoundException e) {
+                return TypeHandles.Unknown.class;
+            }
+        });
     }
 
     static ITypeConfigurable resolveConfigurable(TypeHandle th) {
@@ -181,6 +248,11 @@ public final class TypeHandleHelpers {
     static IGuiTexture resolveIcon(TypeHandle typeHandle) {
         String id = (typeHandle != null) ? typeHandle.getIdentification() : null;
         return CUSTOM_ID_TO_ICON.getOrDefault(id, IGuiTexture.EMPTY);
+    }
+
+    static Supplier<Object> resolveDefaultValue(TypeHandle typeHandle) {
+        String id = (typeHandle != null) ? typeHandle.getIdentification() : null;
+        return CUSTOM_ID_TO_DEFAULT_VALUE.getOrDefault(id, () -> null);
     }
 
     static boolean isCustomTypeHandle(TypeHandle typeHandle) {

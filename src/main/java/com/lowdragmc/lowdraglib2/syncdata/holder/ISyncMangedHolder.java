@@ -19,6 +19,7 @@ import net.fabricmc.fabric.api.networking.v1.PlayerLookup;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 
 import java.util.BitSet;
+import java.util.concurrent.RejectedExecutionException;
 
 
 /**
@@ -45,6 +46,8 @@ public interface ISyncMangedHolder extends IManagedHolder, IAsyncLogic {
             var changed = new BitSet();
             var syncedFields = rootStorage.getSyncFields();
             var serverLevel = getServerLevel();
+            var server = serverLevel.getServer();
+            if (!Platform.serverSafe(server)) return;
             var data = ByteBufUtil.writeCustomData(buffer -> {
                 for (int i = 0; i < syncedFields.length; i++) {
                     var field = syncedFields[i];
@@ -55,12 +58,17 @@ public interface ISyncMangedHolder extends IManagedHolder, IAsyncLogic {
                     }
                 }
             }, serverLevel.registryAccess());
-            serverLevel.getServer().executeIfPossible(() -> {
-                var extra = new CompoundTag();
-                writeCustomSyncData(serverLevel.registryAccess(), extra);
-                var packet = createSyncPacket(changed, data, extra);
-                PlayerLookup.tracking(serverLevel, this.getTrackingPos()).forEach(player -> ServerPlayNetworking.send(player, packet));
-            });
+            try {
+                server.executeIfPossible(() -> {
+                    if (!Platform.serverSafe(server)) return;
+                    var extra = new CompoundTag();
+                    writeCustomSyncData(serverLevel.registryAccess(), extra);
+                    var packet = createSyncPacket(changed, data, extra);
+                    PlayerLookup.tracking(serverLevel, this.getTrackingPos()).forEach(player -> ServerPlayNetworking.send(player, packet));
+                });
+            } catch (RejectedExecutionException ignored) {
+                // The server can begin shutting down between the safety check and task submission.
+            }
         }
     }
 

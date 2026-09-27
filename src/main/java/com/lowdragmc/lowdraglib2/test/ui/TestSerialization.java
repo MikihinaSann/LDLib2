@@ -38,6 +38,7 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.item.enchantment.Enchantments;
 import com.lowdragmc.lowdraglib2.utils.INBTSerializable;
 import com.lowdragmc.lowdraglib2.utils.items.ItemStackHandler;
+import net.minecraft.world.level.block.state.BlockState;
 import org.appliedenergistics.yoga.YogaFlexDirection;
 import org.joml.Vector3f;
 import org.joml.Vector3i;
@@ -70,6 +71,8 @@ public class TestSerialization implements IScreenTest {
         private int[] intArray = new int[]{1, 2, 3};
         @Configurable
         private List<Boolean> booleanList = new ArrayList<>(List.of(true, false, true));
+        @Configurable
+        private List<BlockState> blockstates = new ArrayList<>();
         @Configurable
         private Component componentValue = Component.translatable("ldlib.author");
         @Configurable(subConfigurable = true)

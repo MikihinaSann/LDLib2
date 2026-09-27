@@ -2,10 +2,12 @@ package com.lowdragmc.lowdraglib2.editor.project;
 
 import com.lowdragmc.lowdraglib2.Platform;
 import com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture;
+import com.lowdragmc.lowdraglib2.gui.texture.Icons;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import net.minecraft.nbt.NbtIo;
 
+import org.jetbrains.annotations.Nullable;
 import java.io.File;
 import java.util.Objects;
 import java.util.function.Supplier;
@@ -13,13 +15,124 @@ import java.util.function.Supplier;
 @Getter
 @AllArgsConstructor
 public class ProjectType {
-    public final IGuiTexture icon;
+    /**
+     * The icon of this project type, as it is shown in the file menu and in the asset browser.
+     * <p>
+     * Left public and readable as a field for the sake of the code that already reads it, but it may be
+     * unset — {@code null} or {@link IGuiTexture#EMPTY} — in which case {@link #getDefaultIcon()} stands
+     * in for it. Prefer {@link #getIcon()}, which resolves that fallback.
+     */
+    @Nullable
+    public IGuiTexture icon;
     public final String name;
     public final String suffix;
     public final Supplier<IProject> projectCreator;
 
+    /**
+     * Resolved on first use rather than in a static initializer: a {@link ProjectType} is perfectly
+     * usable off the client (and in plain unit tests), where {@link Icons} cannot be loaded at all.
+     */
+    @Nullable
+    private static IGuiTexture defaultIcon;
+
+    /**
+     * A project type without an icon of its own. It is shown with {@link #getDefaultIcon()}.
+     */
+    public ProjectType(String name, String suffix, Supplier<IProject> projectCreator) {
+        this(null, name, suffix, projectCreator);
+    }
+
     public static ProjectType of(IGuiTexture icon, String name, String suffix, Supplier<IProject> projectCreator) {
         return new ProjectType(icon, name, suffix, projectCreator);
+    }
+
+    /**
+     * As {@link #of(IGuiTexture, String, String, Supplier)}, for a type that is happy with the default icon.
+     */
+    public static ProjectType of(String name, String suffix, Supplier<IProject> projectCreator) {
+        return new ProjectType(null, name, suffix, projectCreator);
+    }
+
+    /**
+     * The icon of this project type, never null: an unset icon falls back to {@link #getDefaultIcon()}.
+     */
+    public IGuiTexture getIcon() {
+        return icon == null || icon == IGuiTexture.EMPTY ? getDefaultIcon() : icon;
+    }
+
+    /**
+     * The icon of one specific project file. Defaults to the icon of the type itself; a type that stores
+     * a thumbnail (or a per-project icon) in its files can answer with that instead.
+     * <p>
+     * Called once per entry while a directory listing is built, so an implementation that has to read the
+     * file for it should cache the result rather than parse the project on every rebuild.
+     *
+     * @param file the project file being displayed.
+     */
+    public IGuiTexture getIcon(File file) {
+        return getIcon();
+    }
+
+    /**
+     * Sets the icon of this project type. Passing {@code null} restores the default icon.
+     *
+     * @return this type, so it can be configured right where it is created.
+     */
+    public ProjectType setIcon(@Nullable IGuiTexture icon) {
+        this.icon = icon;
+        return this;
+    }
+
+    /**
+     * The icon standing in for every project type that does not set one of its own.
+     */
+    public static IGuiTexture getDefaultIcon() {
+        if (defaultIcon == null) {
+            defaultIcon = Icons.PROJECT;
+        }
+        return defaultIcon;
+    }
+
+    /**
+     * Replaces the icon used by every project type that does not set one of its own.
+     *
+     * @param icon the new fallback, or {@code null} to restore the built-in one.
+     */
+    public static void setDefaultIcon(@Nullable IGuiTexture icon) {
+        defaultIcon = icon;
+    }
+
+    /**
+     * Retrieves the root save path for the given project.
+     *
+     * This method determines and returns the root directory where the project data
+     * will be saved or accessed during operations.
+     *
+     * @param project The {@link IProject} instance for which the root save path is to be determined.
+     *                This project should provide relevant information for path resolution.
+     * @param projectRoot The {@link File} instance representing the root directory of the project.
+     *                    Must be a valid directory and accessible.
+     * @return The {@link File} instance representing the resolved root save path for the given project.
+     */
+    public File getRootSavePath(IProject project, File projectRoot) {
+        return projectRoot;
+    }
+
+    /**
+     * Retrieves the default file to prefill when saving the given project.
+     *
+     * @param project The {@link IProject} instance for which the default save file is to be determined.
+     * @param projectRoot The {@link File} instance representing the root directory of the project.
+     * @return The default save file.
+     */
+    public File getDefaultSaveFile(IProject project, File projectRoot) {
+        var savePath = getRootSavePath(project, projectRoot);
+        var defaultFile = new File(savePath, "new" + suffix);
+        var index = 1;
+        while (defaultFile.exists()) {
+            defaultFile = new File(savePath, "new_" + index++ + suffix);
+        }
+        return defaultFile;
     }
 
     /**

@@ -8,10 +8,7 @@ import com.lowdragmc.lowdraglib2.Platform;
 import com.lowdragmc.lowdraglib2.configurator.IConfigurable;
 import com.lowdragmc.lowdraglib2.configurator.annotation.ConfigSetter;
 import com.lowdragmc.lowdraglib2.configurator.annotation.Configurable;
-import com.lowdragmc.lowdraglib2.configurator.ui.ArrayConfiguratorGroup;
-import com.lowdragmc.lowdraglib2.configurator.ui.Configurator;
-import com.lowdragmc.lowdraglib2.configurator.ui.ConfiguratorGroup;
-import com.lowdragmc.lowdraglib2.configurator.ui.StringConfigurator;
+import com.lowdragmc.lowdraglib2.configurator.ui.*;
 import com.lowdragmc.lowdraglib2.gui.editor.view.UIHierarchy;
 import com.lowdragmc.lowdraglib2.gui.sync.SyncValue;
 import com.lowdragmc.lowdraglib2.gui.sync.rpc.RPCEmitter;
@@ -26,6 +23,7 @@ import com.lowdragmc.lowdraglib2.gui.ui.rendering.GUIContext;
 import com.lowdragmc.lowdraglib2.gui.ui.rendering.UIVisualLayer;
 import com.lowdragmc.lowdraglib2.gui.ui.style.*;
 import com.lowdragmc.lowdraglib2.gui.ui.style.animation.StyleAnimation;
+import com.lowdragmc.lowdraglib2.integration.kjs.KJSBindings;
 import com.lowdragmc.lowdraglib2.math.Rect;
 import com.lowdragmc.lowdraglib2.registry.AutoRegistry;
 import com.lowdragmc.lowdraglib2.registry.ILDLRegister;
@@ -35,14 +33,17 @@ import com.lowdragmc.lowdraglib2.syncdata.annotation.SkipPersistedValue;
 import com.lowdragmc.lowdraglib2.utils.PersistedParser;
 import com.lowdragmc.lowdraglib2.utils.TagBuilder;
 import com.lowdragmc.lowdraglib2.utils.XmlUtils;
+import com.lowdragmc.lowdraglib2.gui.ui.utils.KeyState;
 import com.mojang.blaze3d.platform.InputConstants;
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.MapCodec;
-
 import dev.vfyjxf.taffy.style.*;
 import dev.vfyjxf.taffy.tree.Layout;
 import dev.vfyjxf.taffy.tree.NodeId;
 import dev.vfyjxf.taffy.tree.TaffyTree;
+import it.unimi.dsi.fastutil.ints.IntArrays;
+import it.unimi.dsi.fastutil.ints.IntComparator;
+import it.unimi.dsi.fastutil.objects.*;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.experimental.Accessors;
@@ -73,6 +74,7 @@ import oshi.util.tuples.Pair;
 import org.jetbrains.annotations.Nullable;
 import javax.annotation.ParametersAreNonnullByDefault;
 import java.util.*;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -85,9 +87,9 @@ import java.util.stream.Stream;
  * please refer to the see <a href="https://github.com/vfyjxf/taffy-java">Taffy Documentation</a> for more information.
  *
  */
-
 @ParametersAreNonnullByDefault
 @MethodsReturnNonnullByDefault
+@KJSBindings
 @LDLRegister(name = "element", registry = "ldlib2:ui_element", priority = -1)
 public class UIElement implements IConfigurable, IPersistedSerializable, ILDLRegister<UIElement, Supplier<UIElement>> {
     public static Codec<UIElement> CODEC = LDLib2Registries.UI_ELEMENTS.optionalCodec().dispatch(ILDLRegister::getRegistryHolderOptional,
@@ -112,7 +114,7 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
     // structure
     @Nullable
     private UIElement parent;
-    private final List<UIElement> children = new ArrayList<>();
+    private final ObjectArrayList<UIElement> children = new ObjectArrayList<>();
     // style
     @Getter
     @Accessors(chain = true)
@@ -123,8 +125,8 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
     @Getter
     private final StyleBag styleBag = new StyleBag(this);
     @Getter
-    private final List<Style> styles = new ArrayList<>();
-    private final List<Stylesheet> localStylesheets = new ArrayList<>();
+    private final ObjectArrayList<Style> styles = new ObjectArrayList<>();
+    private final ObjectArrayList<Stylesheet> localStylesheets = new ObjectArrayList<>();
     @Getter
     private final LayoutStyle layoutStyle = new LayoutStyle(this);
     @Getter
@@ -147,13 +149,16 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
     private final List<RPCEvent> rpcEvents = new ArrayList<>();
     private final Map<String, Pair<RPCEvent, List<UIEventListener>>> serverCaptureEventListeners = new HashMap<>();
     private final Map<String, Pair<RPCEvent, List<UIEventListener>>> serverBaubleEventListeners = new HashMap<>();
+    private final Map<String, List<Consumer<CompoundTag>>> messageHandlers = new HashMap<>();
+    @Nullable
+    private RPCEvent messageRPC;
     // runtime
     private final Supplier<String> elementName = Suppliers.memoize(() -> {
         var name = name();
         return name.isEmpty() ? "Unknown" : name;
     });
     @Nullable
-    private List<UIElement> sortedChildrenCache = null;
+    private UIElement[] sortedChildrenCache = null;
     private ImmutableList<UIElement> structurePathCache = null;
     private FloatOptional positionXCache = FloatOptional.of();
     private FloatOptional positionYCache = FloatOptional.of();
@@ -187,6 +192,46 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
      * You should not call this method manually.
      */
     protected final void _setModularUIInternal(@Nullable ModularUI mui) {
+        // Once, from the top of the subtree that is moving, and before anything is re-registered.
+        handOverAnimations(modularUI, mui);
+        setModularUIRecursively(mui);
+    }
+
+    /**
+     * Moves whatever animations {@code from}'s engine is running for this subtree onto {@code to}'s.
+     *
+     * <p>A running animation lives in the engine of the UI that started it, and that engine stops being
+     * updated the moment this tree is drawn by a different one. Left where it is, the animation never
+     * reaches its {@code onFinished} — which is how a save notification that closes itself when its
+     * progress bar fills came to sit on screen for good, after the editor window had been minimized
+     * mid-notification and came back inside a fresh {@link ModularUI}.
+     */
+    private void handOverAnimations(@Nullable ModularUI from, @Nullable ModularUI to) {
+        if (from == null || to == null || from == to) return;
+        from.getAnimationEngine().handOver(to.getAnimationEngine(), this::isInSubtree);
+    }
+
+    /**
+     * Whether {@code candidate} is this element or one of its descendants.
+     *
+     * <p>Walks the live parent chain instead of going through {@link #isAncestorOf}: a subtree is
+     * re-hosted from inside {@link #addChildAt}, which invalidates the cached structure paths that
+     * method reads only afterwards, so the cached answer there can still be the pre-move one.
+     */
+    private boolean isInSubtree(Object candidate) {
+        if (!(candidate instanceof UIElement element)) return false;
+        for (var current = element; current != null; current = current.getParent()) {
+            if (current == this) return true;
+        }
+        return false;
+    }
+
+    /**
+     * The re-registration itself, walked down the subtree. Split out of
+     * {@link #_setModularUIInternal} so the work that belongs to a move as a whole happens once, at
+     * the top, rather than once per element on the way down.
+     */
+    private void setModularUIRecursively(@Nullable ModularUI mui) {
         var previous = modularUI;
         if (this.modularUI != mui) {
             if (this.modularUI != null) {
@@ -215,7 +260,7 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
             UIEventDispatcher.dispatchEvent(event, false, false, false);
         }
         for (var child : children) {
-            child._setModularUIInternal(mui);
+            child.setModularUIRecursively(mui);
         }
     }
 
@@ -735,12 +780,17 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
         if (hasChild(child)) {
             throw new IllegalArgumentException("Cannot add the same child twice");
         }
+        // Detaching clears the child's UI, so the engine still holding whatever it had running has to be
+        // noted here — by the time _setModularUIInternal could work it out for itself it is gone.
+        ModularUI detachedFrom = null;
         if (child.hasParent()) {
             assert child.getParent() != null;
+            detachedFrom = child.getModularUI();
             child.getParent().removeChild(child);
         }
         child.parent = this;
         children.add(index, child);
+        child.handOverAnimations(detachedFrom, this.modularUI);
         child._setModularUIInternal(this.modularUI);
         clearSortedChildrenCache();
         child.clearStructurePathCache();
@@ -949,7 +999,7 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
      * Local stylesheets only affect this element and its descendants.
      */
     public List<Stylesheet> getLocalStylesheets() {
-        return Collections.unmodifiableList(localStylesheets);
+        return ObjectLists.unmodifiable(localStylesheets);
     }
 
     /**
@@ -1008,7 +1058,7 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
      */
     public UIElement clearLocalStylesheets() {
         if (!localStylesheets.isEmpty()) {
-            var sheets = new ArrayList<>(localStylesheets);
+            final var sheets = localStylesheets.toArray(Stylesheet[]::new);
             localStylesheets.clear();
             if (!LDLib2.isServer()) {
                 var mui = getModularUI();
@@ -1138,6 +1188,29 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
         return mui != null && mui.getFocusedElement() != null && this.isAncestorOf(mui.getFocusedElement());
     }
 
+    /**
+     * Whether this element, while it has the focus, takes this key for itself.
+     *
+     * <p>A focused text field owns the keys it types and the ones that move its cursor: it stops those
+     * from propagating, so an ancestor's shortcut does not fire while the user is writing. The same
+     * answer is what a keymap asks before running a bare-key shortcut, which is why it is declared here
+     * rather than left private to each element — a container has no other way to tell "the focus is
+     * busy with this key" from "nobody wanted it".
+     *
+     * @see #isTextInput()
+     */
+    public boolean ownsKey(UIEvent event) {
+        return false;
+    }
+
+    /**
+     * Whether the user types into this element right now — true for an editable text field, area or code
+     * editor, false for the same element made read-only.
+     */
+    public boolean isTextInput() {
+        return false;
+    }
+
     /// Interaction
     public boolean isMouseOverElement(float mouseX, float mouseY) {
         return isDisplayed() &&
@@ -1167,6 +1240,32 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
     }
 
     /**
+     * Collects the tooltips this element wants to display while it is hovered.
+     * <p>
+     * It follows the exact same resolution order that {@link ModularUI} uses while rendering: the
+     * {@link UIEvents#HOVER_TOOLTIPS} event wins, and the tooltips of the style are the fallback.
+     * It does not walk up to the parents.
+     *
+     * @return the tooltips of this element, or {@code null} if it provides none.
+     */
+    @Nullable
+    public HoverTooltips collectHoverTooltips() {
+        var event = UIEvent.create(UIEvents.HOVER_TOOLTIPS);
+        event.hasBubblePhase = false;
+        event.hasCapturePhase = false;
+        event.target = this;
+        UIEventDispatcher.dispatchDirectEvent(event, false);
+        if (event.hoverTooltips != null) {
+            return event.hoverTooltips;
+        }
+        var styleTooltips = getStyle().tooltips();
+        if (!styleTooltips.isEmpty()) {
+            return new HoverTooltips(styleTooltips.asList(), null, null, null);
+        }
+        return null;
+    }
+
+    /**
      * Start dragging the element. This will call the {@link com.lowdragmc.lowdraglib2.gui.ui.event.DragHandler#startDrag} method.
      */
     public DragHandler startDrag(@Nullable Object draggingObject, @Nullable IGuiTexture dragTexture) {
@@ -1182,19 +1281,35 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
      * Get the sorted children of this element. The children are sorted by their zIndex and their order in the structure.
      */
     public List<UIElement> getSortedChildren() {
+        // to keep compatibility
+        return Arrays.asList(getSafeSortedChildren());
+    }
+
+    public UIElement[] getSafeSortedChildren() {
         if (sortedChildrenCache == null) {
-            // Pre-build index map to avoid O(n) indexOf calls inside the comparator
-            var indexMap = new HashMap<UIElement, Integer>(children.size() * 2);
-            for (int i = 0; i < children.size(); i++) {
-                indexMap.put(children.get(i), i);
+            int n = children.size();
+            var indexArrayBuffer = new int[n];
+
+            for (int i = 0; i < n; i++) {
+                indexArrayBuffer[i] = i;
             }
-            sortedChildrenCache = new ArrayList<>(children);
-            sortedChildrenCache.sort((a, b) -> {
-                int zCompare = Integer.compare(b.style.zIndex(), a.style.zIndex());
-                if (zCompare != 0) return zCompare;
-                return indexMap.getOrDefault(b, 0) - indexMap.getOrDefault(a, 0);
+
+            IntArrays.quickSort(indexArrayBuffer, 0, n, (a, b) -> {
+                int zA = children.get(a).style.zIndex();
+                int zB = children.get(b).style.zIndex();
+
+                if (zA != zB) {
+                    return Integer.compare(zB, zA);
+                }
+                return Integer.compare(b, a);
             });
+
+            sortedChildrenCache = new UIElement[n];
+            for (int i = 0; i < n; i++) {
+                sortedChildrenCache[i] = children.get(indexArrayBuffer[i]);
+            }
         }
+
         return sortedChildrenCache;
     }
 
@@ -1253,7 +1368,7 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
         var hidden = !style.overflowVisible();
 
         if (!hidden || isMouseOverRect(getContentX(), getContentY(), getContentWidth(), getContentHeight(), mouseX, mouseY)) {
-            for (var child : getSortedChildren()) {
+            for (var child : getSafeSortedChildren()) {
                 var result = child.hitTest(localMouseX, localMouseY);
                 if (result != null && (hover == null || hover.getB() < result.getB())) {
                     hover = result;
@@ -1511,6 +1626,101 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
         return addRPCEvent(creator.apply(this));
     }
 
+    /**
+     * Retrieves the existing messageRPC instance or creates a new one if it is null.
+     * The messageRPC is initialized as an RPC event with a String name and a CompoundTag data payload.
+     * It handles registered message handlers by invoking them with the provided data.
+     *
+     * @return The existing or newly created RPCEvent instance for message handling.
+     */
+    private RPCEvent getOrCreateMessageRPC() {
+        if (messageRPC == null) {
+            messageRPC = RPCEventBuilder.simple(String.class, CompoundTag.class, (name, data) -> {
+                var handlers = messageHandlers.get(name);
+                if (handlers == null || handlers.isEmpty()) return;
+                var payload = data == null ? new CompoundTag() : data;
+                for (var handler : new ArrayList<>(handlers)) {
+                    handler.accept(payload);
+                }
+            });
+            addRPCEvent(messageRPC);
+        }
+        return messageRPC;
+    }
+
+    /**
+     * Registers a message handler for the specified message name. The handler will be invoked
+     * whenever a message with the given name is received.
+     *
+     * @param name the name of the message to listen for
+     * @param handler the function to handle the message, which receives a CompoundTag as its input
+     * @return the current instance of UIElement
+     */
+    public UIElement onMessage(String name, Consumer<CompoundTag> handler) {
+        getOrCreateMessageRPC();
+        messageHandlers.computeIfAbsent(name, k -> new ArrayList<>()).add(handler);
+        return this;
+    }
+
+    /**
+     * Registers a message handler that gets triggered when a message with the specified
+     * name is received. The handler processes the message payload and performs operations
+     * on the current {@code UIElement}.
+     *
+     * @param name the unique name of the message to register the handler for
+     * @param handler a {@code BiConsumer} accepting the current {@code UIElement}
+     *                and the {@code CompoundTag} payload that represents the message data
+     * @return the current {@code UIElement}, allowing for method chaining
+     */
+    public UIElement onMessage(String name, BiConsumer<UIElement, CompoundTag> handler) {
+        return onMessage(name, (payload) -> handler.accept(this, payload));
+    }
+
+    // fxxk kjs!
+    public UIElement kjs$onMessage(String name, BiConsumer<UIElement, CompoundTag> handler) {
+        return onMessage(name, (payload) -> handler.accept(this, payload));
+    }
+
+    /**
+     * Removes the specified message handler for a given message name. If the message handler is successfully
+     * removed and no handlers remain associated with the message name, the message name is also removed from
+     * the internal registry.
+     *
+     * @param name the name of the message whose handler is to be removed
+     * @param handler the handler to be removed for the specified message name
+     * @return this UIElement instance for method chaining
+     */
+    public UIElement offMessage(String name, Consumer<CompoundTag> handler) {
+        var handlers = messageHandlers.get(name);
+        if (handlers != null) {
+            handlers.remove(handler);
+            if (handlers.isEmpty()) {
+                messageHandlers.remove(name);
+            }
+        }
+        return this;
+    }
+
+    /**
+     * Sends a message event with the provided name and data.
+     * If the data is null, an empty CompoundTag will be used.
+     *
+     * @param name the name of the message to send
+     * @param data optional CompoundTag containing the message data; if null, an empty CompoundTag will be used
+     */
+    public void sendMessage(String name, @Nullable CompoundTag data) {
+        sendEvent(getOrCreateMessageRPC(), name, data == null ? new CompoundTag() : data);
+    }
+
+    /**
+     * Sends a message with the specified name and a default compound tag.
+     *
+     * @param name the name associated with the message to be sent
+     */
+    public void sendMessage(String name) {
+        sendMessage(name, new CompoundTag());
+    }
+
     public UIElement removeRPCEvent(RPCEvent event) {
         this.rpcEvents.remove(event);
         var mui = getModularUI();
@@ -1528,7 +1738,10 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
         var eventListeners = useCapture ? serverCaptureEventListeners : serverBaubleEventListeners;
         eventListeners.computeIfAbsent(eventType, type -> {
             var listeners = new ArrayList<UIEventListener>();
-            var rpcEvent = RPCEventBuilder.simple(UIEvent.class, event -> listeners.forEach(e -> e.handleEvent(event)));
+            var rpcEvent = RPCEventBuilder.simple(UIEvent.class, event -> {
+                event.currentElement = this;
+                listeners.forEach(e -> e.handleEvent(event));
+            });
             addRPCEvent(rpcEvent);
             return new Pair<>(rpcEvent, listeners);
         }).getB().add(listener);
@@ -1550,6 +1763,23 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
             }
         }
         return this;
+    }
+
+    /**
+     * The server-side listeners registered for one event type, or an empty list.
+     *
+     * <p>The read that {@link #addServerEventListener} and {@link #removeServerEventListener} were
+     * missing. Normally these only ever run because a client sent the matching RPC, which leaves the
+     * server half of an element's behaviour untestable without a client — and for a UI assembled by
+     * something other than hand-written code, that half is exactly the part worth checking. Handing
+     * back the listeners lets a caller run them directly.</p>
+     *
+     * <p>Unmodifiable: adding through here would skip registering the RPC the client needs to reach
+     * the listener, leaving one that can only ever be called locally.</p>
+     */
+    public List<UIEventListener> getServerEventListeners(String eventType, boolean useCapture) {
+        var pair = (useCapture ? serverCaptureEventListeners : serverBaubleEventListeners).get(eventType);
+        return pair == null ? List.of() : Collections.unmodifiableList(pair.getB());
     }
 
     @Nullable
@@ -1585,22 +1815,19 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
     }
 
     public static boolean isShiftDown() {
-        long id = Minecraft.getInstance().getWindow().getWindow();
-        return InputConstants.isKeyDown(id, GLFW.GLFW_KEY_LEFT_SHIFT) || InputConstants.isKeyDown(id, GLFW.GLFW_KEY_LEFT_SHIFT);
+        return KeyState.isShiftDown();
     }
 
     public static boolean isCtrlDown() {
-        return Screen.hasControlDown();
+        return KeyState.isCtrlDown();
     }
 
     public static boolean isAltDown() {
-        long id = Minecraft.getInstance().getWindow().getWindow();
-        return InputConstants.isKeyDown(id, GLFW.GLFW_KEY_LEFT_ALT) || InputConstants.isKeyDown(id, GLFW.GLFW_KEY_RIGHT_ALT);
+        return KeyState.isAltDown();
     }
 
     public static boolean isKeyDown(int keyCode) {
-        long id = Minecraft.getInstance().getWindow().getWindow();
-        return InputConstants.isKeyDown(id, keyCode);
+        return KeyState.isKeyDown(keyCode);
     }
 
     public boolean isMouseDown(int button) {
@@ -1712,7 +1939,7 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
                 maxY = Math.max(maxY, corner.y / corner.w);
             }
             var aabb = Rect.of(Mth.floor(minX), Mth.floor(minY), Mth.ceil(maxX), Mth.ceil(maxY));
-            return aabb.isCollide(context.scissorStack.peek());
+            return aabb.isCollide(context.scissorStack.top());
         }
         return true;
     }
@@ -1729,6 +1956,14 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
 
     /**
      * Renders the contents of the GUI element. includes additional background and children
+     *
+     * <p>Prefer overriding {@link #shouldDrawChildren()} or {@link #drawChildren(GUIContext)}:
+     * this method owns two lifecycles a subclass would otherwise have to reproduce by hand — the
+     * {@code overflow: hidden} scissor and the element-colour save/restore — and getting either
+     * wrong strands GL state for everything drawn afterwards.
+     *
+     * <p>Deliberately not {@code final}, despite that: it is public API on a published library and
+     * downstream elements already override it.
      */
     public void drawContents(GUIContext guiContext) {
         // not need to use scissoring if overflow cip defined
@@ -1741,7 +1976,7 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
         if(!isCulled) {
             drawBackgroundAdditional(guiContext);
         }
-        if (!children.isEmpty()) {
+        if (!children.isEmpty() && shouldDrawChildren()) {
             var currentColor = guiContext.elementColor;
             var hasColor = currentColor != -1;
             // we roll back first
@@ -1749,7 +1984,9 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
                 guiContext.graphics.flush();
                 guiContext.resetElementColor();
             }
-            List.copyOf(children).forEach(child -> child.drawInBackground(guiContext));
+
+            drawChildren(guiContext);
+
             if (hasColor) {
                 guiContext.graphics.flush();
                 guiContext.setElementColor(currentColor);
@@ -1758,6 +1995,26 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
         if (hidden) {
             guiContext.graphics.flush();
             guiContext.disableScissor();
+        }
+    }
+
+    /**
+     * Whether to descend into children at all this frame.
+     *
+     * <p>The seam for elements that stand in for their own subtree — a level-of-detail proxy, a
+     * collapsed container. Returning {@code false} skips the whole subtree, which is where the cost
+     * of a deep tree actually lives: each child would otherwise transform its corners and test the
+     * scissor just to discover it has nothing to draw.
+     */
+    protected boolean shouldDrawChildren() {
+        return true;
+    }
+
+    /** Draws the children, back to front by z-index. */
+    protected void drawChildren(GUIContext guiContext) {
+        var sortedChildren = getSafeSortedChildren();
+        for (int i = sortedChildren.length - 1; i >= 0; i--) {
+            sortedChildren[i].drawInBackground(guiContext);
         }
     }
 
@@ -1892,7 +2149,7 @@ public class UIElement implements IConfigurable, IPersistedSerializable, ILDLReg
         }, (getter, setter) -> {
             var value = getter.get();
             if (value.startsWith("__") && value.endsWith("__")) {
-                return new Configurator(value);
+                return new Configurator(value).setCopiableDirect(value);
             }
             return new StringConfigurator("", getter, setter, "", true);
         }, true);

@@ -26,12 +26,21 @@ public class PortContainerElement extends ModelElement {
     public PortContainerElement(PortNodeModel portNodeModel, Predicate<PortModel> portFilter) {
         this.portNodeModel = portNodeModel;
         this.portFilter = portFilter;
+        addClass("__port-container__");
     }
 
     @Override
     protected void buildUI() {
-        portContainer = new PortContainer();
+        portContainer = createPortContainer();
         addChild(portContainer);
+    }
+
+    /**
+     * Factory for the backing {@link PortContainer}. Overridden by vertical containers so the
+     * spawned ports use the vertical layout.
+     */
+    protected PortContainer createPortContainer() {
+        return new PortContainer();
     }
 
     @Override

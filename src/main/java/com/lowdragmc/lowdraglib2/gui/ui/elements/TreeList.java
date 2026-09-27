@@ -8,6 +8,7 @@ import com.lowdragmc.lowdraglib2.gui.texture.Icons;
 import com.lowdragmc.lowdraglib2.gui.ColorPattern;
 import com.lowdragmc.lowdraglib2.gui.texture.DynamicTexture;
 import com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture;
+import com.lowdragmc.lowdraglib2.gui.texture.TextTexture;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvent;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
@@ -47,6 +48,15 @@ import java.util.function.Predicate;
 @MethodsReturnNonnullByDefault
 @LDLRegister(name = "tree-list", group = "misc", registry = "ldlib2:ui_element")
 public class TreeList<NODE extends ITreeNode<?, ?>> extends UIElement {
+    /** Where a dragged node is dropped relative to the target row. */
+    public enum DropMode { BEFORE, INTO, AFTER }
+
+    /**
+     * A drag-reorder request: move {@link #dragged} nodes relative to {@link #target} per {@link #mode}.
+     * The consumer registered via {@link #setOnReorder(Consumer)} performs the actual model change.
+     */
+    public record ReorderRequest<N>(Set<N> dragged, N target, DropMode mode) {}
+
     @Getter @Setter
     @Configurable(name = "TreeListStyle")
     public class TreeListStyle extends Style {
@@ -120,11 +130,46 @@ public class TreeList<NODE extends ITreeNode<?, ?>> extends UIElement {
     protected boolean doubleClickToExpand = true;
     @Setter
     protected boolean clickToExpand = false;
+    /**
+     * Gates {@link #clickToExpand} per node. Nodes rejected by this filter are only expanded by their
+     * arrow (or {@link #rightClickToExpand}), so a left click on them does nothing but select.
+     */
+    @Setter
+    protected Predicate<NODE> clickToExpandFilter = Predicates.alwaysTrue();
+    /**
+     * When true, a right click on a branch toggles its expanded state. Default {@code false}.
+     */
+    @Setter
+    protected boolean rightClickToExpand = false;
     @Setter
     protected boolean supportMultipleSelection = false;
     @Setter
     protected boolean staticTree = false;
+    /** When true the root row is not drawn and its children are the top level. */
+    @Getter
     protected boolean flattenRoot = false;
+    /**
+     * Opt-in drag-to-reorder. When enabled each row can be dragged onto another row to request a
+     * move (before / into / after). The move itself is performed by {@link #onReorder}; validity is
+     * gated by {@link #reorderValidator}. Default {@code false} keeps the previous behavior.
+     */
+    protected boolean draggable = false;
+    protected Consumer<ReorderRequest<NODE>> onReorder = Consumers.nop();
+    protected Predicate<ReorderRequest<NODE>> reorderValidator = Predicates.alwaysTrue();
+    /**
+     * Optional factory for the drag payload object (receives the pressed node). Lets consumers hand
+     * external drop targets a payload they recognise. Defaults to the {@link TreeList} itself.
+     */
+    @Nullable
+    protected Function<NODE, Object> dragPayloadFactory = null;
+    /**
+     * When true, the TreeList and each row size to their content's max width instead of stretching
+     * to the parent. Useful when embedded in a {@link ScrollerView} with horizontal scrolling so
+     * that deeply-indented rows or long node labels can push the scroll container wider.
+     * <p>Default {@code false} preserves the previous full-width behavior.
+     */
+    @Getter
+    protected boolean widthFitsContent = false;
 
     // runtime
     @Nullable
@@ -139,10 +184,30 @@ public class TreeList<NODE extends ITreeNode<?, ?>> extends UIElement {
     protected final Set<NODE> expandedNodes = new HashSet<>();
     protected final Map<NODE, List<NODE>> displayedChildren = new HashMap<>();
 
+    // drag-reorder runtime (single source of truth for the drop indicator)
+    protected final Set<NODE> draggingNodes = new LinkedHashSet<>();
+    @Nullable
+    protected NODE dragCandidate = null;
+    @Nullable
+    protected NODE dropTargetNode = null;
+    protected DropMode dropMode = DropMode.INTO;
+    protected boolean dropValid = false;
+
     public TreeList() {
         getLayout().widthPercent(100);
         getLayout().gapAll(1);
         internalSetup();
+        // drop indicator + reorder are driven from the TreeList level so exactly one indicator
+        // ever shows and it clears automatically (no per-node residue). DRAG_ENTER/DRAG_END are
+        // capture-only in the dispatcher, so listen in the capture phase for those.
+        addEventListener(UIEvents.DRAG_ENTER, this::onDragOver, true);
+        addEventListener(UIEvents.DRAG_UPDATE, this::onDragOver);
+        addEventListener(UIEvents.DRAG_LEAVE, this::onDragLeave, true);
+        addEventListener(UIEvents.DRAG_PERFORM, this::onDragPerform);
+        addEventListener(UIEvents.DRAG_END, e -> clearDragState(), true);
+        // one listener for the whole tree rather than one per row: only expanded nodes can have gained
+        // or lost children, so the poll costs what the tree shows, not what it holds
+        addEventListener(UIEvents.TICK, e -> checkExpandedChildrenValid());
     }
 
     public TreeList(NODE root) {
@@ -181,6 +246,56 @@ public class TreeList<NODE extends ITreeNode<?, ?>> extends UIElement {
 
     public TreeList<NODE> setFlattenRoot(boolean flattenRoot) {
         this.flattenRoot = flattenRoot;
+        reloadList();
+        return this;
+    }
+
+    /** Enable/disable opt-in drag-to-reorder. Rebuilds rows so the drag overlay/handlers attach. */
+    public TreeList<NODE> setDraggable(boolean draggable) {
+        this.draggable = draggable;
+        reloadList();
+        return this;
+    }
+
+    /** Callback that performs a reorder produced by dragging. The consumer owns model + history. */
+    public TreeList<NODE> setOnReorder(Consumer<ReorderRequest<NODE>> onReorder) {
+        this.onReorder = onReorder;
+        return this;
+    }
+
+    /** Predicate gating whether a hovered drop is allowed; drives the indicator color and the drop. */
+    public TreeList<NODE> setReorderValidator(Predicate<ReorderRequest<NODE>> reorderValidator) {
+        this.reorderValidator = reorderValidator;
+        return this;
+    }
+
+    /** Supplies the drag payload object (from the pressed node) so external drop targets can accept it. */
+    public TreeList<NODE> setDragPayloadFactory(@Nullable Function<NODE, Object> dragPayloadFactory) {
+        this.dragPayloadFactory = dragPayloadFactory;
+        return this;
+    }
+
+    /**
+     * Toggle whether the TreeList sizes to its content (and each row sizes to its own content)
+     * instead of stretching to the parent's width. See {@link #widthFitsContent} for details.
+     * <p>Callers' node UIs should also let their text label use {@code adaptiveWidth(true)} on
+     * its text style so the label reports its natural width to the layout engine.
+     */
+    public TreeList<NODE> setWidthFitsContent(boolean v) {
+        this.widthFitsContent = v;
+        if (v) {
+            // Auto width + min-width 100% of parent: TreeList fills the parent when content is
+            // narrow, but grows beyond it when the widest row is wider (horizontal scroll case).
+            // alignSelf FLEX_START prevents the parent's stretch from short-circuiting auto-width;
+            // alignItems FLEX_START prevents row children from auto-stretching to TreeList width
+            // (rows manage their own minWidthPercent(100) — see createNodeUI).
+            getLayout().widthAuto();
+            getLayout().minWidthPercent(100);
+            getLayout().alignSelf(AlignItems.FLEX_START);
+            getLayout().alignItems(AlignItems.FLEX_START);
+        } else {
+            getLayout().widthPercent(100);
+        }
         reloadList();
         return this;
     }
@@ -300,6 +415,27 @@ public class TreeList<NODE extends ITreeNode<?, ?>> extends UIElement {
     }
 
     /**
+     * Whether left clicking the given node's row expands it. When it doesn't, its arrow takes over as
+     * the expand affordance.
+     */
+    public boolean expandsOnClick(NODE node) {
+        return clickToExpand && clickToExpandFilter.test(node);
+    }
+
+    /**
+     * Expands the given node if it is collapsed, collapses it otherwise. Leaves are ignored.
+     *
+     * @param node the {@code TreeNode} to toggle
+     */
+    public void toggleNodeExpanded(NODE node) {
+        if (isNodeExpanded(node)) {
+            collapseNode(node);
+        } else {
+            expandNode(node);
+        }
+    }
+
+    /**
      * Collapses a given node in the tree by removing its child nodes from the UI representation
      * if the node is expanded and not a leaf node. This method updates the internal state of
      * expanded nodes and manages the removal of the corresponding UI elements associated with
@@ -353,8 +489,17 @@ public class TreeList<NODE extends ITreeNode<?, ?>> extends UIElement {
                 addNodeUI(childNode, index + 1);
             }
         }
-        if (!staticTree) {
-            ui.addEventListener(UIEvents.TICK, e -> checkNodeChildrenValid(node));
+    }
+
+    /**
+     * Re-diffs every expanded node against its current children, so the tree follows changes made to the
+     * model (or, for a file tree, to disk) without anyone having to tell it. Runs once per tick.
+     */
+    protected void checkExpandedChildrenValid() {
+        if (staticTree) return;
+        // copied: a node that lost its children collapses, which mutates the set being iterated
+        for (var node : List.copyOf(expandedNodes)) {
+            checkNodeChildrenValid(node);
         }
     }
 
@@ -415,7 +560,15 @@ public class TreeList<NODE extends ITreeNode<?, ?>> extends UIElement {
         var container = new UIElement().layout(layout -> {
             layout.flexDirection(FlexDirection.ROW);
             layout.alignItems(AlignItems.CENTER);
-            layout.widthPercent(100);
+            if (widthFitsContent) {
+                // Row sizes to its own content, but at least the full TreeList width — which
+                // itself auto-sizes to the widest row's content. Net effect: every row ends up
+                // as wide as the widest row, so the selection/hover background spans full width
+                // and horizontal scrolling exposes the whole tree.
+                layout.minWidthPercent(100);
+            } else {
+                layout.widthPercent(100);
+            }
             layout.gapAll(2);
         }).style(style -> {
             style.backgroundTexture(DynamicTexture.of(() -> isNodeSelected(node) ? treeListStyle.hoverTexture() : treeListStyle.nodeTexture()));
@@ -429,12 +582,9 @@ public class TreeList<NODE extends ITreeNode<?, ?>> extends UIElement {
                 IGuiTexture.EMPTY
         ))).addEventListener(UIEvents.MOUSE_DOWN, e -> {
             if (e.button == 0) {
-                if (node.isBranch() && !clickToExpand) {
-                    if (isNodeExpanded(node)) {
-                        collapseNode(node);
-                    } else {
-                        expandNode(node);
-                    }
+                // the arrow is the expand affordance whenever clicking the row itself doesn't expand
+                if (node.isBranch() && !expandsOnClick(node)) {
+                    toggleNodeExpanded(node);
                 }
             }
         });
@@ -444,18 +594,38 @@ public class TreeList<NODE extends ITreeNode<?, ?>> extends UIElement {
         container.addEventListener(UIEvents.DOUBLE_CLICK, e -> onNodeDoubleClicked(e, node));
         container.addEventListener(UIEvents.MOUSE_ENTER, e -> hoveredNode = node, true);
         container.addEventListener(UIEvents.MOUSE_LEAVE, e -> hoveredNode = null, true);
+        if (draggable) {
+            // Overlay is a pure function of the shared drop state, so it clears itself.
+            container.style(style -> style.overlayTexture(DynamicTexture.of(() ->
+                    node == dropTargetNode ? createDraggingOverlay(dropMode, dropValid) : IGuiTexture.EMPTY)));
+            container.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+                if (e.button == 0) {
+                    dragCandidate = node;
+                }
+            });
+            container.addEventListener(UIEvents.MOUSE_LEAVE, e -> {
+                // leaving the pressed row while the button is held begins the drag
+                if (dragCandidate == node && isMouseDown(0)) {
+                    startDragNodes(node);
+                }
+                dragCandidate = null;
+            }, true);
+            container.addEventListener(UIEvents.MOUSE_UP, e -> dragCandidate = null);
+        }
         onNodeUICreated.accept(node, container);
         return container;
     }
 
     protected void onNodeClicked(UIEvent event, NODE node) {
+        if (event.button == 1) {
+            if (node.isBranch() && rightClickToExpand) {
+                toggleNodeExpanded(node);
+            }
+            return;
+        }
         if (event.button == 0) {
-            if (node.isBranch() && clickToExpand) {
-                if (isNodeExpanded(node)) {
-                    collapseNode(node);
-                } else {
-                    expandNode(node);
-                }
+            if (node.isBranch() && expandsOnClick(node)) {
+                toggleNodeExpanded(node);
             }
             if (!selectableNodeFilter.test(node)) return;
             // shift
@@ -493,14 +663,120 @@ public class TreeList<NODE extends ITreeNode<?, ?>> extends UIElement {
     protected void onNodeDoubleClicked(UIEvent event, NODE node) {
         if (event.button == 0) {
             if (node.isBranch() && doubleClickToExpand) {
-                if (isNodeExpanded(node)) {
-                    collapseNode(node);
-                } else {
-                    expandNode(node);
-                }
+                toggleNodeExpanded(node);
             }
             onDoubleClickNode.accept(node);
         }
+    }
+
+    // ------------------------------------------------------------------ drag reorder
+
+    protected void startDragNodes(NODE pressed) {
+        if (!draggable) {
+            return;
+        }
+        draggingNodes.clear();
+        // dragging a node that is part of a multi-selection drags the whole selection
+        if (selectedNodes.contains(pressed) && selectedNodes.size() > 1) {
+            draggingNodes.addAll(selectedNodes);
+        } else {
+            draggingNodes.add(pressed);
+        }
+        dropTargetNode = null;
+        dropValid = false;
+        var ui = nodeUIs.get(pressed);
+        if (ui != null) {
+            var count = draggingNodes.size();
+            Object payload = dragPayloadFactory != null ? dragPayloadFactory.apply(pressed) : this;
+            ui.startDrag(payload, new TextTexture(count > 1 ? (count + " items") : "1 item"));
+        }
+    }
+
+    // a non-empty draggingNodes means WE own the active drag (the DragHandler is a per-UI singleton),
+    // so it is the reliable guard regardless of the (consumer-supplied) payload object.
+    protected void onDragOver(UIEvent event) {
+        if (!draggable || draggingNodes.isEmpty()) {
+            return;
+        }
+        updateDropTarget(event.x, event.y);
+    }
+
+    protected void onDragLeave(UIEvent event) {
+        // clear the indicator once the drag moves off this tree entirely (no lingering line)
+        if (draggingNodes.isEmpty()) {
+            return;
+        }
+        if (event.relatedTarget == null || !isAncestorOf(event.relatedTarget)) {
+            dropTargetNode = null;
+        }
+    }
+
+    /**
+     * Resolves the drop target from the mouse Y over row geometry (not the hovered element), so the
+     * inter-row gaps are not dead zones and a target is always found while over the list.
+     */
+    protected void updateDropTarget(float mouseX, float mouseY) {
+        if (!isMouseOver(getContentX(), getContentY(), getContentWidth(), getContentHeight(), mouseX, mouseY)) {
+            dropTargetNode = null;
+            return;
+        }
+        var rows = new ArrayList<>(nodeUIs.entrySet());
+        rows.sort(Comparator.comparingDouble(e -> e.getValue().getPositionY()));
+        if (rows.isEmpty()) {
+            dropTargetNode = null;
+            return;
+        }
+        for (int i = 0; i < rows.size(); i++) {
+            var ui = rows.get(i).getValue();
+            // extend the first row's top and each row's bottom across the gap to the next row's top
+            float top = (i == 0) ? Math.min(ui.getPositionY(), getContentY()) : ui.getPositionY();
+            float bottom = (i + 1 < rows.size())
+                    ? rows.get(i + 1).getValue().getPositionY()
+                    : ui.getPositionY() + ui.getSizeHeight();
+            if (mouseY >= top && mouseY < bottom) {
+                float y = ui.getPositionY();
+                float h = ui.getSizeHeight();
+                DropMode mode;
+                if (mouseY < y + h / 3f) {
+                    mode = DropMode.BEFORE;
+                } else if (mouseY < y + h * 2f / 3f) {
+                    mode = DropMode.INTO;
+                } else {
+                    mode = DropMode.AFTER;
+                }
+                setDropTarget(rows.get(i).getKey(), mode);
+                return;
+            }
+        }
+        // below the last row -> after the last node
+        setDropTarget(rows.get(rows.size() - 1).getKey(), DropMode.AFTER);
+    }
+
+    protected void setDropTarget(NODE node, DropMode mode) {
+        // never indicate a drop on a row that is itself being dragged
+        if (draggingNodes.contains(node)) {
+            dropTargetNode = null;
+            return;
+        }
+        dropTargetNode = node;
+        dropMode = mode;
+        dropValid = reorderValidator.test(new ReorderRequest<>(Set.copyOf(draggingNodes), node, mode));
+    }
+
+    protected void onDragPerform(UIEvent event) {
+        if (!draggable || draggingNodes.isEmpty()) {
+            return;
+        }
+        if (dropTargetNode != null && dropValid) {
+            onReorder.accept(new ReorderRequest<>(Set.copyOf(draggingNodes), dropTargetNode, dropMode));
+        }
+        clearDragState();
+    }
+
+    protected void clearDragState() {
+        draggingNodes.clear();
+        dropTargetNode = null;
+        dropValid = false;
     }
 
     /// Template
@@ -567,5 +843,18 @@ public class TreeList<NODE extends ITreeNode<?, ?>> extends UIElement {
             };
         }
         return IGuiTexture.EMPTY;
+    }
+
+    @Environment(EnvType.CLIENT)
+    public static IGuiTexture createDraggingOverlay(DropMode mode, boolean valid) {
+        int color = valid ? ColorPattern.T_WHITE.color : ColorPattern.T_BRIGHT_RED.color;
+        return switch (mode) {
+            case BEFORE -> (graphics, mouseX, mouseY, x, y, width, height, partialTicks) ->
+                    DrawerHelper.drawSolidRect(graphics, x, y - 1, width, 1, color);
+            case AFTER -> (graphics, mouseX, mouseY, x, y, width, height, partialTicks) ->
+                    DrawerHelper.drawSolidRect(graphics, x, y + height, width, 1, color);
+            case INTO -> (graphics, mouseX, mouseY, x, y, width, height, partialTicks) ->
+                    DrawerHelper.drawSolidRect(graphics, x, y, width, height, color);
+        };
     }
 }

@@ -6,6 +6,7 @@ import com.lowdragmc.lowdraglib2.core.mixins.accessor.MinecraftAccessor;
 import com.lowdragmc.lowdraglib2.gui.ColorPattern;
 import com.lowdragmc.lowdraglib2.gui.holder.DebugScreen;
 import com.lowdragmc.lowdraglib2.gui.ui.debugger.UIDebugger;
+import com.lowdragmc.lowdraglib2.gui.ui.debugger.UIDebuggerWindow;
 import com.lowdragmc.lowdraglib2.gui.ui.style.HierarchicalStyleMatcher;
 import com.lowdragmc.lowdraglib2.utils.animation.AnimationEngine;
 import com.lowdragmc.lowdraglib2.gui.sync.UISyncManager;
@@ -13,9 +14,14 @@ import com.lowdragmc.lowdraglib2.gui.ui.event.*;
 import com.lowdragmc.lowdraglib2.gui.holder.IModularUIHolder;
 import com.lowdragmc.lowdraglib2.gui.ui.layout.LayoutProperties;
 import com.lowdragmc.lowdraglib2.gui.ui.rendering.GUIContext;
+import com.lowdragmc.lowdraglib2.gui.ui.rendering.UISurface;
 import com.lowdragmc.lowdraglib2.gui.ui.style.StyleEngine;
+import com.lowdragmc.lowdraglib2.gui.ui.utils.KeyState;
+import com.lowdragmc.lowdraglib2.gui.LDLibFonts;
 import com.lowdragmc.lowdraglib2.gui.util.DrawerHelper;
+import com.lowdragmc.lowdraglib2.integration.kjs.KJSBindings;
 import com.lowdragmc.lowdraglib2.math.Size;
+import com.lowdragmc.lowdraglib2.utils.Scope;
 import com.mojang.blaze3d.systems.RenderSystem;
 import dev.vfyjxf.taffy.geometry.TaffySize;
 import dev.vfyjxf.taffy.style.AvailableSpace;
@@ -47,18 +53,32 @@ import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import org.appliedenergistics.yoga.YogaConstants;
 import org.joml.Matrix4f;
+import org.joml.Vector3f;
 import org.lwjgl.glfw.GLFW;
 
 import org.jetbrains.annotations.Nullable;
 import javax.annotation.ParametersAreNonnullByDefault;
+import java.io.File;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 @ParametersAreNonnullByDefault
 @MethodsReturnNonnullByDefault
+@KJSBindings
 public class ModularUI {
+    /**
+     * The UI currently handling input or rendering, when that is not the one a caller can reach from
+     * its own element tree.
+     *
+     * @see #active()
+     */
+    @Environment(EnvType.CLIENT)
+    @Nullable
+    private static ModularUI activeUI;
+
     public final UI ui;
     public final UISyncManager syncManager;
     @Nullable
@@ -158,6 +178,18 @@ public class ModularUI {
     private boolean debugMode = false;
     @Nullable
     private UIDebugger uiDebuggerCache;
+    /** A queued {@link #setDebuggerWindowed} — see {@link #applyPendingDebuggerHost}. */
+    @Nullable
+    private Boolean pendingDebuggerWindowed;
+    /**
+     * Whether this UI has been torn down and not re-initialised since.
+     *
+     * <p>The honest answer to "is this still being shown", and not one a caller can work out for
+     * itself: a screen pushed under a gui layer is not {@code Minecraft#screen} any more but is very
+     * much still alive, so comparing against that reports every dialog as a teardown.
+     */
+    @Getter
+    private boolean removed;
 
     public ModularUI(UI ui) {
         this(ui, null);
@@ -199,7 +231,11 @@ public class ModularUI {
         element.nodeId = taffyTree.newLeaf(element.getTaffyStyle().style);
         elementByNode.put(element.nodeId, element);
         if (element.getParent() != null) {
-            taffyTree.insertChildAtIndex(element.getParent().nodeId, element.getSiblingIndex(), element.nodeId);
+            var parentID = element.getParent().nodeId;
+            // parent may belong to another tree is invalid
+            if (taffyTree.containsNode(parentID)) {
+                taffyTree.insertChildAtIndex(parentID, element.getSiblingIndex(), element.nodeId);
+            }
         }
 
         // Register by ID if present and not empty
@@ -357,7 +393,7 @@ public class ModularUI {
         return elementsById.entrySet().stream()
                 .filter(entry -> pattern.matcher(entry.getKey()).matches())
                 .flatMap(entry -> entry.getValue().stream())
-                .collect(java.util.stream.Collectors.toList());
+                .collect(Collectors.toList());
     }
 
     /**
@@ -370,7 +406,7 @@ public class ModularUI {
         return elementsById.entrySet().stream()
                 .filter(entry -> entry.getKey().contains(substring))
                 .flatMap(entry -> entry.getValue().stream())
-                .collect(java.util.stream.Collectors.toList());
+                .collect(Collectors.toList());
     }
 
     /**
@@ -383,7 +419,7 @@ public class ModularUI {
         return elementsById.entrySet().stream()
                 .filter(entry -> entry.getKey().startsWith(prefix))
                 .flatMap(entry -> entry.getValue().stream())
-                .collect(java.util.stream.Collectors.toList());
+                .collect(Collectors.toList());
     }
 
     /**
@@ -396,7 +432,7 @@ public class ModularUI {
         return elementsById.entrySet().stream()
                 .filter(entry -> entry.getKey().endsWith(suffix))
                 .flatMap(entry -> entry.getValue().stream())
-                .collect(java.util.stream.Collectors.toList());
+                .collect(Collectors.toList());
     }
 
     /**
@@ -479,6 +515,9 @@ public class ModularUI {
 
     @Environment(EnvType.CLIENT)
     public void init(int screenWidth, int screenHeight) {
+        // A UI can be torn down and stood back up - a preview pane, a recipe viewer - so this is
+        // "removed and not since re-initialised", not "was ever removed".
+        this.removed = false;
         this.screenWidth = screenWidth;
         this.screenHeight = screenHeight;
         if (ui.dynamicSize != null) {
@@ -598,6 +637,7 @@ public class ModularUI {
      * This method can be overridden to perform cleanup tasks.
      */
     public void onRemoved() {
+        removed = true;
         ui.rootElement.onRemoved();
         styleEngine.dispose();
     }
@@ -656,6 +696,163 @@ public class ModularUI {
         requestFocus(null);
     }
 
+    /**
+     * Finds the {@link ModularUI} behind a screen, however it got there — a screen that is itself a
+     * holder, a menu-backed {@code AbstractContainerScreen}, or a widget attached to some other
+     * screen.
+     *
+     * <p>Lives here because "is there an LDLib2 UI on screen right now" is a question any mod can
+     * need to ask, and answering it means knowing all three attachment routes.
+     */
+    @Environment(EnvType.CLIENT)
+    @Nullable
+    public static ModularUI of(@Nullable Screen screen) {
+        if (screen == null) return null;
+        if (screen instanceof IModularUIHolder holder && holder.hasModularUI()) {
+            return holder.getModularUI();
+        }
+        if (screen instanceof AbstractContainerScreen<?> container
+                && container.getMenu() instanceof IModularUIHolder holder && holder.hasModularUI()) {
+            return holder.getModularUI();
+        }
+        for (var child : screen.children()) {
+            if (child instanceof IModularUIHolder holder && holder.hasModularUI()) {
+                return holder.getModularUI();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Hit-tests at a GUI-scaled screen position without touching any state.
+     *
+     * <p>The counterpart to {@link #refreshHoveredElementAtScreen}, which is a mutator: it moves the
+     * cached hover and rewrites the {@code __hovered__} class chain. Anything that only wants to
+     * <em>ask</em> what is at a point — "can this be clicked?" — must not have to disturb the hover
+     * to find out, or its own later assertions end up observing the probe rather than the UI.
+     */
+    @Environment(EnvType.CLIENT)
+    @Nullable
+    public UIElement hitTestAtScreen(float screenX, float screenY) {
+        var local = new Matrix4f(lastDrawPose).invert().transformPosition(new Vector3f(screenX, screenY, 0));
+        var hit = ui.rootElement.hitTest(local.x, local.y);
+        return hit == null ? null : hit.getA();
+    }
+
+    /**
+     * Hit-tests at the given position and updates the cached hover element plus the {@code __hovered__}
+     * class chain. Called once per frame from {@code ModularUIWidget#render}.
+     *
+     * <p>Exposed because every mouse method on {@code ModularUIWidget} routes to
+     * {@link #getLastHoveredElement()} rather than hit-testing itself. Anything that synthesises input
+     * outside the normal cursor pipeline — a test harness, a scripted tutorial, a remote driver — has to
+     * move the logical cursor here first, or the event resolves against whatever was hovered last frame.
+     *
+     * @param localMouseX mouse x in root-element local space, i.e. screen space run back through the
+     *                    inverse of {@link #getLastDrawPose()} (see {@code GUIContext#refreshLocalMouse})
+     * @param localMouseY mouse y in the same space
+     */
+    @Environment(EnvType.CLIENT)
+    public void refreshHoveredElement(float localMouseX, float localMouseY) {
+        lastMouseX = localMouseX;
+        lastMouseY = localMouseY;
+
+        var hoverElement = ui.rootElement.hitTest(lastMouseX, lastMouseY);
+        var newHoveredElement = hoverElement == null ? null : hoverElement.getA();
+        if (lastHoveredElements.isEmpty() ||
+                newHoveredElement != null && !newHoveredElement.getStructurePath().equals(lastHoveredElements)) {
+            for (var element : lastHoveredElements) {
+                element.removeClass("__hovered__");
+            }
+
+            lastHoveredElements.clear();
+
+            if (newHoveredElement != null) {
+                lastHoveredElements.addAll(newHoveredElement.getStructurePath());
+                for (var element : lastHoveredElements) {
+                    element.addClass("__hovered__");
+                }
+            }
+        }
+
+        lastHoveredElement = newHoveredElement;
+    }
+
+    /**
+     * Maps a GUI-scaled screen position into the root element's local space and refreshes the hover
+     * from it. This is the inverse of the transform {@code GUIContext} applies each frame.
+     */
+    @Environment(EnvType.CLIENT)
+    public void refreshHoveredElementAtScreen(float screenX, float screenY) {
+        var local = new Matrix4f(lastDrawPose).invert().transformPosition(new Vector3f(screenX, screenY, 0));
+        refreshHoveredElement(local.x, local.y);
+    }
+
+    /**
+     * The UI currently dispatching input or rendering, or {@code null} outside of one.
+     *
+     * <p>Needed because some UI can be reached from more than one host: an {@code Editor} owns its
+     * views, but a view torn off into its own window is rendered by a different {@code ModularUI},
+     * and anything the editor spawns for it — a context menu, a dialog — has to be parented into
+     * <em>that</em> one or it appears in the wrong window. Callers that have an element in hand
+     * should prefer {@code element.getModularUI()}; this is the fallback for the ones that do not.
+     */
+    @Environment(EnvType.CLIENT)
+    @Nullable
+    public static ModularUI active() {
+        return activeUI;
+    }
+
+    /**
+     * Marks {@code ui} as {@link #active()} until the returned scope is closed. Restores the previous
+     * value rather than clearing, so nested hosts unwind correctly.
+     */
+    @Environment(EnvType.CLIENT)
+    public static Scope scopedActive(@Nullable ModularUI ui) {
+        var previous = activeUI;
+        activeUI = ui;
+        return () -> activeUI = previous;
+    }
+
+    /**
+     * Routes files dropped onto the window from outside the game to the element under the cursor, as a
+     * {@link UIEvents#FILE_DROP} event that bubbles up from it.
+     * <p>
+     * The cursor position is queried from the window rather than taken from the last mouse move: the
+     * operating system does not deliver mouse movement while a drag from another application is in
+     * progress, so the cached hover element is whatever was under the cursor before the drag began.
+     *
+     * @return true if any element handled the drop.
+     */
+    @Environment(EnvType.CLIENT)
+    public boolean onFilesDrop(List<File> files) {
+        return onFilesDrop(files, UISurface.main());
+    }
+
+    /**
+     * As {@link #onFilesDrop(List)}, but against a UI that is not hosted in the game window — the
+     * cursor has to be queried from that window and scaled by its own size.
+     */
+    @Environment(EnvType.CLIENT)
+    public boolean onFilesDrop(List<File> files, UISurface surface) {
+        if (files.isEmpty()) return false;
+        var x = new double[1];
+        var y = new double[1];
+        GLFW.glfwGetCursorPos(surface.windowHandle(), x, y);
+        var mouseX = x[0] * surface.guiScaledWidth() / surface.screenWidth();
+        var mouseY = y[0] * surface.guiScaledHeight() / surface.screenHeight();
+
+        var hit = ui.rootElement.hitTest(mouseX, mouseY);
+        if (hit == null) return false;
+        var event = UIEvent.create(UIEvents.FILE_DROP);
+        event.x = (float) mouseX;
+        event.y = (float) mouseY;
+        event.droppedFiles = List.copyOf(files);
+        event.target = hit.getA();
+        UIEventDispatcher.dispatchEvent(event);
+        return event.hasHandler;
+    }
+
     @Environment(EnvType.CLIENT)
     public void setHoverTooltip(List<Component> tooltipTexts, ItemStack tooltipStack, @Nullable Font tooltipFont, @Nullable TooltipComponent tooltipComponent) {
         this.tooltipTexts = tooltipTexts;
@@ -686,6 +883,19 @@ public class ModularUI {
         return widget;
     }
 
+    /**
+     * Runs one of the {@link CommandEvents} against this UI, exactly as its key chord would.
+     *
+     * <p>For a keymap that resolved the chord itself: the action still has to reach whatever holds the
+     * selection, and that routing lives in one place.
+     *
+     * @return true if anything handled it.
+     */
+    @Environment(EnvType.CLIENT)
+    public boolean dispatchCommand(String command) {
+        return getWidget().dispatchCommand(command, lastPressedKeyCode, lastPressedScanCode, lastPressedModifiers);
+    }
+
     @Environment(EnvType.CLIENT)
     public List<Rect2i> getGuiExtraAreas() {
         if (extraAreas.isEmpty()) calculateExtraAreas();
@@ -698,16 +908,135 @@ public class ModularUI {
         ui.rootElement.appendExtraAreas(extraAreas);
     }
 
+    /**
+     * This UI's debugger, or {@code null} if it has never had one. Creates nothing and enables
+     * nothing, unlike {@link #acquireDebugger()} — so asking is never what starts a session.
+     */
+    @Environment(EnvType.CLIENT)
+    @Nullable
+    public UIDebugger getUiDebugger() {
+        return uiDebuggerCache;
+    }
+
+    /**
+     * Marks this UI as being inspected and returns its debugger, without opening a host for it.
+     *
+     * <p>{@link #enableDebugger(boolean)} pushes a screen, which is right when the user asks for one
+     * but wrong when a host that already exists wants to retarget itself at this UI — a floating
+     * window's UI, say. That case needs the debugger, not a second host.
+     */
+    @Environment(EnvType.CLIENT)
+    public UIDebugger acquireDebugger() {
+        this.debugMode = true;
+        if (uiDebuggerCache == null) {
+            uiDebuggerCache = new UIDebugger(this);
+        }
+        return uiDebuggerCache;
+    }
+
+    /**
+     * Opens or closes a debugger on this UI.
+     *
+     * <p>It opens where it always has, as a {@link DebugScreen} layered over the game — that is one
+     * keypress with nothing else to know. The title bar's window toggle then moves it into an OS
+     * window of its own, which is where it stops covering the UI it inspects; see
+     * {@link #setDebuggerWindowed}.
+     */
     @Environment(EnvType.CLIENT)
     public void enableDebugger(boolean debugMode) {
         if (this.debugMode == debugMode) return;
         this.debugMode = debugMode;
         if (debugMode) {
-            if (uiDebuggerCache == null) {
-                uiDebuggerCache = new UIDebugger(this);
-            }
-            Minecraft.getInstance().setScreen(new DebugScreen(uiDebuggerCache));
+            Minecraft.getInstance().setScreen(new DebugScreen(acquireDebugger()));
+        } else {
+            // Both hosts, because either could be the one showing it. Leaving the other open would
+            // put a debugger on screen that its own target no longer believes in.
+            UIDebuggerWindow.closeFor(this);
+            dismissDebugScreen();
         }
+    }
+
+    /**
+     * Pops the debug screen layer, if the top one is this UI's.
+     *
+     * <p>Guarded twice over. Only a layer of ours, because something else may have been pushed above
+     * it and popping that would be a different screen disappearing; and only the debugger this UI
+     * currently owns, because a debug screen that has been retargeted elsewhere is no longer ours to
+     * close.
+     */
+    @Environment(EnvType.CLIENT)
+    private void dismissDebugScreen() {
+        var minecraft = Minecraft.getInstance();
+        if (minecraft.screen instanceof DebugScreen debugScreen && debugScreen.uiDebugger == uiDebuggerCache) {
+            minecraft.setScreen(null);
+        }
+    }
+
+    /** Whether this UI's debugger is in an OS window of its own rather than layered over the game. */
+    @Environment(EnvType.CLIENT)
+    public boolean isDebuggerWindowed() {
+        return UIDebuggerWindow.windowFor(this) != null;
+    }
+
+    /**
+     * Moves an open debugger between its two hosts, without ending the session.
+     *
+     * <p>The order matters in both directions and is the whole content of this method: the incoming
+     * host adopts the debugger element <em>before</em> the outgoing one goes away, or the outgoing
+     * one takes it down with it — popping a gui layer runs {@code removed()} over everything still
+     * parented under it.
+     *
+     * <p>Requesting a window can fail (native fullscreen, a GLFW with no windowing platform), in
+     * which case nothing moves and the debugger stays where it is.
+     */
+    @Environment(EnvType.CLIENT)
+    public void setDebuggerWindowed(boolean windowed) {
+        if (!debugMode || uiDebuggerCache == null || windowed == isDebuggerWindowed()) return;
+        var minecraft = Minecraft.getInstance();
+        if (windowed) {
+            if (!UIDebuggerWindow.openFor(uiDebuggerCache)) return;
+            dismissDebugScreen();
+        } else {
+            minecraft.setScreen(new DebugScreen(uiDebuggerCache));
+            var window = UIDebuggerWindow.windowFor(this);
+            if (window != null) {
+                window.handOff();
+            }
+        }
+    }
+
+    /**
+     * Applies a host switch the debugger's title bar asked for.
+     *
+     * <p>Called by whichever host is showing it, between frames. The request is queued rather than
+     * acted on because it arrives from inside the toggle's own click dispatch, and switching hosts
+     * reparents the whole debugger — the toggle's own great-grandparent — out from under it.
+     */
+    @Environment(EnvType.CLIENT)
+    public void applyPendingDebuggerHost() {
+        var pending = pendingDebuggerWindowed;
+        if (pending == null) return;
+        pendingDebuggerWindowed = null;
+        setDebuggerWindowed(pending);
+    }
+
+    /**
+     * Asks for a host switch on the next frame.
+     *
+     * @see #applyPendingDebuggerHost()
+     */
+    @Environment(EnvType.CLIENT)
+    public void requestDebuggerWindowed(boolean windowed) {
+        pendingDebuggerWindowed = windowed;
+    }
+
+    /**
+     * Whether the debugger has turned the pointer into an element inspector, in which case presses on
+     * this UI select rather than activate.
+     */
+    @Environment(EnvType.CLIENT)
+    private boolean isPickingElements() {
+        return debugMode && uiDebuggerCache != null && uiDebuggerCache.isFocusMode();
     }
 
     @ParametersAreNonnullByDefault
@@ -763,6 +1092,14 @@ public class ModularUI {
 
         @Override
         public boolean mouseClicked(double mouseX, double mouseY, int button) {
+            // Picking comes first and swallows the press: in focus mode the pointer is an inspector,
+            // and inspecting a button is not supposed to also press it. Handled here rather than in
+            // whatever host is showing this UI, because since the debugger became a window of its own
+            // it need not be the same host - and both paths arrive through this method.
+            if (isPickingElements()) {
+                uiDebuggerCache.pickHovered();
+                return true;
+            }
             lastMouseDownX = (float) mouseX;
             lastMouseDownY = (float) mouseY;
             lastMouseDownButton = button;
@@ -796,6 +1133,10 @@ public class ModularUI {
 
         @Override
         public boolean mouseReleased(double mouseX, double mouseY, int button) {
+            // The other half of the swallowed press. Without it the release still lands, and against
+            // whatever element the last real click remembered — which fires a CLICK on it, so
+            // inspecting a button you had already pressed once would press it again.
+            if (isPickingElements()) return true;
             lastMouseDownButton = -1;
             var releasedElement = getLastHoveredElement();
             if (dragHandler.isDragging()) {
@@ -947,6 +1288,19 @@ public class ModularUI {
             if (allowDebugMode && keyCode == GLFW.GLFW_KEY_F3) {
                 enableDebugger(!debugMode);
             }
+            // The debugger's own chords, handled here so they work with the pointer over the UI being
+            // inspected — which, now that the debugger is a window of its own, is not where its
+            // keyboard is. Live only while it is open, so a UI's own F1 is untouched otherwise.
+            if (debugMode && uiDebuggerCache != null) {
+                if (keyCode == GLFW.GLFW_KEY_F1) {
+                    uiDebuggerCache.setFocusMode(!uiDebuggerCache.isFocusMode());
+                    return true;
+                }
+                if (keyCode == GLFW.GLFW_KEY_F4) {
+                    uiDebuggerCache.setRenderUIShaping(!uiDebuggerCache.isRenderUIShaping());
+                    return true;
+                }
+            }
             lastPressedKeyCode = keyCode;
             lastPressedScanCode = scanCode;
             lastPressedModifiers = modifiers;
@@ -960,53 +1314,87 @@ public class ModularUI {
                 event.target = focusedElement;
                 UIEventDispatcher.dispatchEvent(event);
                 hasHandler = event.hasHandler;
-                if (command != null) {
-                    event = createExecuteCommandEvent(command, keyCode, scanCode, modifiers);
-                    event.target = focusedElement;
-                    UIEventDispatcher.dispatchEvent(event);
-                    hasHandler |= event.hasHandler;
+                // This table is the fallback for UIs with no keymap of their own. Once a keymap has seen
+                // the key it owns the outcome - whether it ran something, or deliberately has nothing
+                // bound to that chord any more - and this table firing as well would either run the
+                // action twice or keep a rebound shortcut alive on its old key. Same for a key some
+                // element consumed outright.
+                if (command != null && !event.propagationStopped && !event.keymapResolved) {
+                    hasHandler |= dispatchCommand(command, keyCode, scanCode, modifiers);
                 }
                 return hasHandler;
             } else if (command != null){
-                var event = createValidCommandEvent(command, keyCode, scanCode, modifiers);
-                event.target = ui.rootElement;
-                var handled = UIEventDispatcher.dispatchAllChildren(event);
-                hasHandler |= event.hasHandler;
-                if (handled && event.currentElement != null) {
-                    var executeCommandEvent = createExecuteCommandEvent(command, keyCode, scanCode, modifiers);
-                    executeCommandEvent.target = event.currentElement;
-                    UIEventDispatcher.dispatchEvent(executeCommandEvent);
-                    hasHandler |= event.hasHandler;
-                }
-                return hasHandler;
+                return dispatchCommand(command, keyCode, scanCode, modifiers);
             }
             return false;
         }
 
+        /**
+         * The editor command a key chord maps to, if any.
+         *
+         * <p>Resolved through {@link KeyState} rather than {@code Screen.isCopy}/{@code hasControlDown}
+         * because those read Minecraft's own window handle, and {@code glfwGetKey} is per-window: with
+         * a UI focused in any other window they all return false and every shortcut here silently
+         * stops working. On the game window {@link KeyState} falls through to the very same calls.
+         */
         @Nullable
         protected String getCommandType(int keyCode) {
-            if (Screen.isCopy(keyCode)) {
+            var command = KeyState.isCommandChord();
+            var commandShift = KeyState.isCtrlDown() && KeyState.isShiftDown() && !KeyState.isAltDown();
+            if (KeyState.isCopy(keyCode)) {
                 return CommandEvents.COPY;
-            } else if (Screen.isPaste(keyCode)) {
+            } else if (KeyState.isPaste(keyCode)) {
                 return CommandEvents.PASTE;
-            } else if (Screen.isCut(keyCode)) {
+            } else if (KeyState.isCut(keyCode)) {
                 return CommandEvents.CUT;
-            } else if (Screen.isSelectAll(keyCode)) {
+            } else if (KeyState.isSelectAll(keyCode)) {
                 return CommandEvents.SELECT_ALL;
-            } else if (keyCode == GLFW.GLFW_KEY_Z && Screen.hasControlDown() && !Screen.hasShiftDown() && !Screen.hasAltDown()) {
+            } else if (keyCode == GLFW.GLFW_KEY_Z && command) {
                 return CommandEvents.UNDO;
-            } else if (keyCode == GLFW.GLFW_KEY_Z && Screen.hasControlDown() && Screen.hasShiftDown() && !Screen.hasAltDown()) {
+            } else if (keyCode == GLFW.GLFW_KEY_Z && commandShift) {
                 return CommandEvents.REDO;
-            } else if (keyCode == GLFW.GLFW_KEY_Y && Screen.hasControlDown() && !Screen.hasShiftDown() && !Screen.hasAltDown()) {
+            } else if (keyCode == GLFW.GLFW_KEY_Y && command) {
                 return CommandEvents.REDO;
-            } else if (keyCode == GLFW.GLFW_KEY_F && Screen.hasControlDown() && !Screen.hasShiftDown() && !Screen.hasAltDown()) {
+            } else if (keyCode == GLFW.GLFW_KEY_F && command) {
                 return CommandEvents.FIND;
-            } else if (keyCode == GLFW.GLFW_KEY_S && Screen.hasControlDown() && !Screen.hasShiftDown() && !Screen.hasAltDown()) {
+            } else if (keyCode == GLFW.GLFW_KEY_S && command) {
                 return CommandEvents.SAVE;
-            } else if (keyCode == GLFW.GLFW_KEY_D && Screen.hasControlDown() && !Screen.hasShiftDown() && !Screen.hasAltDown()) {
+            } else if (keyCode == GLFW.GLFW_KEY_D && command) {
                 return CommandEvents.DUPLICATE;
             }
             return null;
+        }
+
+        /**
+         * Runs one of the {@link CommandEvents} against the UI, the way a key chord does.
+         *
+         * <p>With something focused the command goes straight to it — a copy belongs to whatever has
+         * the selection, not to whichever ancestor listens for copies. With nothing focused there is no
+         * such answer, so the UI is asked who wants it and the first taker gets it.
+         *
+         * <p>Public because a keymap resolves its own chords and then needs this exact routing to reach
+         * the same handlers a built-in chord would have.
+         *
+         * @return true if anything handled the command.
+         */
+        public boolean dispatchCommand(String command, int keyCode, int scanCode, int modifiers) {
+            if (focusedElement != null) {
+                var event = createExecuteCommandEvent(command, keyCode, scanCode, modifiers);
+                event.target = focusedElement;
+                UIEventDispatcher.dispatchEvent(event);
+                return event.hasHandler;
+            }
+            var event = createValidCommandEvent(command, keyCode, scanCode, modifiers);
+            event.target = ui.rootElement;
+            var handled = UIEventDispatcher.dispatchAllChildren(event);
+            var hasHandler = event.hasHandler;
+            if (handled && event.currentElement != null) {
+                var executeCommandEvent = createExecuteCommandEvent(command, keyCode, scanCode, modifiers);
+                executeCommandEvent.target = event.currentElement;
+                UIEventDispatcher.dispatchEvent(executeCommandEvent);
+                hasHandler |= executeCommandEvent.hasHandler;
+            }
+            return hasHandler;
         }
 
         protected UIEvent createValidCommandEvent(String command, int keyCode, int scanCode, int modifiers) {
@@ -1081,6 +1469,23 @@ public class ModularUI {
         /// rendering
         @Override
         public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
+            render(guiGraphics, mouseX, mouseY, partialTick, UISurface.main());
+        }
+
+        /**
+         * Renders a frame into {@code surface} rather than the game window.
+         *
+         * <p>The surface is both handed to the {@link GUIContext} — which needs it for the scissor
+         * box and for sizing visual layers — and published as {@link UISurface#current()}, for the
+         * draw code that only ever receives a {@code GuiGraphics} and so cannot be told directly.
+         */
+        public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick, UISurface surface) {
+            try (var ignored = UISurface.push(surface)) {
+                renderFrame(guiGraphics, mouseX, mouseY, partialTick, surface);
+            }
+        }
+
+        private void renderFrame(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick, UISurface surface) {
             // update tick
             if (tickWhileRending && Minecraft.getInstance() instanceof MinecraftAccessor accessor) {
                 var currentTick = accessor.ldlib2$getClientTickCount();
@@ -1102,49 +1507,20 @@ public class ModularUI {
 
             // rendering
             lastDrawPose = new Matrix4f(guiGraphics.pose().last().pose());
-            var guiContext = GUIContext.of(ModularUI.this, guiGraphics, mouseX, mouseY, partialTick);
+            var guiContext = GUIContext.of(ModularUI.this, guiGraphics, mouseX, mouseY, partialTick, surface);
 
-            lastMouseX = guiContext.localMouseX;
-            lastMouseY = guiContext.localMouseY;
-
-            var hoverElement = ui.rootElement.hitTest(lastMouseX, lastMouseY);
-            var newHoveredElement = hoverElement == null ? null : hoverElement.getA();
-            if (lastHoveredElements.isEmpty() ||
-                    newHoveredElement != null && !newHoveredElement.getStructurePath().equals(lastHoveredElements)) {
-                for (var element : lastHoveredElements) {
-                    element.removeClass("__hovered__");
-                }
-
-                lastHoveredElements.clear();
-
-                if (newHoveredElement != null) {
-                    lastHoveredElements.addAll(newHoveredElement.getStructurePath());
-                    for (var element : lastHoveredElements) {
-                        element.addClass("__hovered__");
-                    }
-                }
-            }
-
-            lastHoveredElement = newHoveredElement;
+            refreshHoveredElement(guiContext.localMouseX, guiContext.localMouseY);
             ui.rootElement.drawInBackground(guiContext);
 
             if (lastHoveredElement != null && tooltipTexts == null) {
                 var element = lastHoveredElement;
                 while (element != null) {
-                    var event = UIEvent.create(UIEvents.HOVER_TOOLTIPS);
-                    event.hasBubblePhase = false;
-                    event.hasCapturePhase = false;
-                    event.target = element;
-                    UIEventDispatcher.dispatchDirectEvent(event, false);
-                    if (event.hoverTooltips != null) {
-                        setHoverTooltip(event.hoverTooltips.tooltipTexts(),
-                                Optional.ofNullable(event.hoverTooltips.tooltipStack()).orElse(ItemStack.EMPTY),
-                                event.hoverTooltips.tooltipFont(),
-                                event.hoverTooltips.tooltipComponent());
-                        break;
-                    }
-                    if (!element.getStyle().tooltips().isEmpty()) {
-                        setHoverTooltip(element.getStyle().tooltips().asList(), ItemStack.EMPTY, null, null);
+                    var hoverTooltips = element.collectHoverTooltips();
+                    if (hoverTooltips != null) {
+                        setHoverTooltip(hoverTooltips.tooltipTexts(),
+                                Optional.ofNullable(hoverTooltips.tooltipStack()).orElse(ItemStack.EMPTY),
+                                hoverTooltips.tooltipFont(),
+                                hoverTooltips.tooltipComponent());
                         break;
                     }
                     element = element.getParent();
@@ -1155,6 +1531,13 @@ public class ModularUI {
 
             RenderSystem.enableDepthTest();
             RenderSystem.depthMask(true);
+
+            // Above the UI's own content, below its tooltips - and drawn here, in the inspected UI's
+            // frame, because the debugger showing these outlines may well be in a different window.
+            if (debugMode && uiDebuggerCache != null) {
+                uiDebuggerCache.renderHostOverlay(guiGraphics, mouseX, mouseY);
+            }
+
             if (screen instanceof AbstractContainerScreen<?> containerScreen && !containerScreen.getMenu().getCarried().isEmpty()) {
                 return;
             }
@@ -1167,7 +1550,7 @@ public class ModularUI {
             if (drawTooltips && !dragHandler.isDragging() && tooltipTexts != null && !tooltipTexts.isEmpty()) {
                 guiGraphics.pose().pushPose();
                 guiGraphics.pose().translate(0, 0, 200);
-                DrawerHelper.drawTooltip(guiGraphics, (int) lastMouseX, (int) lastMouseY, tooltipTexts, tooltipStack, tooltipComponent, tooltipFont == null ? Minecraft.getInstance().font : tooltipFont);
+                DrawerHelper.drawTooltip(guiGraphics, (int) lastMouseX, (int) lastMouseY, tooltipTexts, tooltipStack, tooltipComponent, tooltipFont == null ? LDLibFonts.font() : tooltipFont);
                 guiGraphics.pose().popPose();
             }
 

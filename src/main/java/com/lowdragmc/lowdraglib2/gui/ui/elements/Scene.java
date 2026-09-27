@@ -1,5 +1,6 @@
 package com.lowdragmc.lowdraglib2.gui.ui.elements;
 
+import com.lowdragmc.lowdraglib2.LDLib2;
 import com.lowdragmc.lowdraglib2.client.scene.*;
 import com.lowdragmc.lowdraglib2.client.utils.RenderUtils;
 import com.lowdragmc.lowdraglib2.gui.texture.TextTexture;
@@ -8,6 +9,7 @@ import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvent;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
 import com.lowdragmc.lowdraglib2.gui.ui.rendering.GUIContext;
 import com.lowdragmc.lowdraglib2.gui.util.DrawerHelper;
+import com.lowdragmc.lowdraglib2.integration.kjs.KJSBindings;
 import com.lowdragmc.lowdraglib2.math.Size;
 import com.lowdragmc.lowdraglib2.math.interpolate.Eases;
 import com.lowdragmc.lowdraglib2.math.interpolate.Interpolator;
@@ -27,6 +29,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.util.FastColor;
 import net.minecraft.util.Mth;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
@@ -34,7 +37,6 @@ import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
-import org.appliedenergistics.yoga.YogaOverflow;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
@@ -49,6 +51,7 @@ import java.util.function.Consumer;
 @Accessors(chain = true)
 @ParametersAreNonnullByDefault
 @MethodsReturnNonnullByDefault
+@KJSBindings
 @LDLRegister(name = "scene", group = "misc", registry = "ldlib2:ui_element")
 public class Scene extends UIElement {
     private static final Object ROTATION_DRAGGING = new Object();
@@ -93,7 +96,15 @@ public class Scene extends UIElement {
     @Getter
     protected boolean useCache;
     @Getter
+    protected boolean syncCompile;
+    @Getter
     protected boolean useOrtho = false;
+    @Getter
+    protected ClipContext.Block clipBlock = ClipContext.Block.OUTLINE;
+    @Getter
+    protected ClipContext.Fluid clipFluid = ClipContext.Fluid.NONE;
+    @Getter @Setter
+    protected boolean allowXEILookup = true;
     @Getter
     protected boolean autoReleased = true;
     @Getter @Setter
@@ -129,7 +140,24 @@ public class Scene extends UIElement {
     public Scene useCacheBuffer(boolean cacheBuffer) {
         useCache = cacheBuffer;
         if (renderer != null) {
-            renderer.useCacheBuffer(true);
+            renderer.useCacheBuffer(cacheBuffer);
+        }
+        return this;
+    }
+
+    public Scene syncCompile() {
+        return syncCompile(true);
+    }
+
+    /**
+     * Compile the cached vertex buffers incrementally on the main/render thread instead of on a
+     * background thread. Use this when the backing {@link Level} doesn't tolerate off-thread access.
+     * Has no effect unless {@link #useCacheBuffer(boolean)} is also enabled.
+     */
+    public Scene syncCompile(boolean syncCompile) {
+        this.syncCompile = syncCompile;
+        if (renderer != null) {
+            renderer.syncCompile(syncCompile);
         }
         return this;
     }
@@ -235,6 +263,9 @@ public class Scene extends UIElement {
         }
         renderer.setCameraLookAt(center, camZoom(), Math.toRadians(rotationYaw), Math.toRadians(rotationPitch));
         renderer.useCacheBuffer(useCache);
+        renderer.syncCompile(syncCompile);
+        renderer.setClipBlock(clipBlock);
+        renderer.setClipFluid(clipFluid);
         if (dummyWorld.getParticleManager() != null) {
             renderer.setParticleManager(dummyWorld.getParticleManager());
         }
@@ -301,6 +332,26 @@ public class Scene extends UIElement {
 
     public Scene setRenderedCore(Collection<BlockPos> blocks) {
         return setRenderedCore(blocks, null);
+    }
+
+    @Environment(EnvType.CLIENT)
+    public Scene setClipContext(ClipContext.Block block, ClipContext.Fluid fluid) {
+        this.clipBlock = block;
+        this.clipFluid = fluid;
+        if (renderer != null) {
+            renderer.setClipBlock(block);
+            renderer.setClipFluid(fluid);
+        }
+        return this;
+    }
+
+    /**
+     * Enable XEI (JEI/REI/EMI) lookup for the currently hovered block. Once enabled,
+     * the hovered block's {@link #lastHoverItem} becomes the ingredient under the cursor
+     * for XEI recipe lookup (R/U keys). Runtime toggle via {@link #setAllowXEILookup(boolean)}.
+     */
+    public Scene xeiLookup() {
+        return this;
     }
 
     @Environment(EnvType.CLIENT)

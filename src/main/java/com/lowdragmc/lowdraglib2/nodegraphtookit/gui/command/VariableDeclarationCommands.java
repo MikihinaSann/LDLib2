@@ -1,7 +1,10 @@
 package com.lowdragmc.lowdraglib2.nodegraphtookit.gui.command;
 
 import com.lowdragmc.lowdraglib2.nodegraphtookit.api.type.TypeHandle;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.model.graph.GraphModel;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.group.GroupModel;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.model.group.GroupModelBase;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.model.group.IGroupItemModel;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.variable.*;
 import net.minecraft.network.chat.Component;
 import org.jetbrains.annotations.Nullable;
@@ -92,7 +95,7 @@ public final class VariableDeclarationCommands {
                     .setName(variableName)
                     .setGroup(group)
                     .setIndexInGroup(indexInGroup)
-                    .setModifiers(modifierFlags)
+                    .setModifiers(newVariableDeclaration.getModifiers())
                     .setScope(scope)
                     .setTypeHandle(typeHandle)
                     .setVariableType(variableType)
@@ -105,6 +108,79 @@ public final class VariableDeclarationCommands {
             while (current != null) {
                 view.blackboard.setGroupModelExpanded(current, true);
                 current = current.getParentGroup();
+            }
+        }
+
+        @Override
+        public Component getCommandName() {
+            return NAME;
+        }
+    }
+
+    /**
+     * Command to create an (empty) group in the Blackboard.
+     */
+    public static class CreateGroupCommand extends UndoableGraphCommand {
+        public static final Component NAME = Component.translatable("graph.commands.create_group");
+
+        /** The name of the group to create. */
+        public String groupName;
+
+        /** The group (or section) the new group is inserted into; {@code null} → default section. */
+        public @Nullable GroupModel parentGroup;
+
+        /** The index within the parent where the new group will be inserted. */
+        public int indexInGroup;
+
+        public CreateGroupCommand(String name, @Nullable GroupModel parentGroup, int indexInGroup) {
+            this.groupName = name;
+            this.parentGroup = parentGroup;
+            this.indexInGroup = indexInGroup;
+        }
+
+        @Override
+        public void execute() {
+            var group = graphModel.createGroup(groupName, null);
+            var parent = parentGroup != null ? parentGroup
+                    : graphModel.getSectionModel(GraphModel.DEFAULT_SECTION_NAME);
+            if (parent == null) return;
+            parent.insertItem(group, indexInGroup);
+
+            // Expand ancestors so the newly created group is visible in the tree.
+            var current = group.getParentGroup();
+            while (current != null) {
+                view.blackboard.setGroupModelExpanded(current, true);
+                current = current.getParentGroup();
+            }
+        }
+
+        @Override
+        public Component getCommandName() {
+            return NAME;
+        }
+    }
+
+    /**
+     * Moves a Blackboard item (variable or group) into a target group at a given index. Handles
+     * both reorder-within-group and move-between-groups in one call — {@link GroupModel#insertItem}
+     * removes from the previous parent automatically.
+     */
+    public static class MoveGroupItemCommand extends UndoableGraphCommand {
+        public static final Component NAME = Component.translatable("graph.commands.move_group_item");
+        private final IGroupItemModel item;
+        private final GroupModelBase targetGroup;
+        private final int index;
+
+        public MoveGroupItemCommand(IGroupItemModel item, GroupModelBase targetGroup, int index) {
+            this.item = item;
+            this.targetGroup = targetGroup;
+            this.index = index;
+        }
+
+        @Override
+        public void execute() {
+            if (targetGroup instanceof GroupModel g) {
+                g.insertItem(item, index);
             }
         }
 
@@ -129,6 +205,13 @@ public final class VariableDeclarationCommands {
         public void execute() {
             for (var variable : variableDeclarationModels) {
                 variable.setModifiers(modifierFlags);
+                // Keep the scope in sync with the subgraph kind, mirroring
+                // CustomGraphModelImpl.createVariable: an external (INPUT/OUTPUT) variable is
+                // EXPOSED (settable in the inspector / a material uniform), an internal one LOCAL.
+                // Without this, changing an existing variable to "External" only flipped the
+                // modifier and left scope=LOCAL, so it never became an exposed uniform.
+                variable.setScope(modifierFlags == ModifierFlags.NONE
+                        ? VariableScope.LOCAL : VariableScope.EXPOSED);
             }
 
             graphModel.updateSubGraphs();

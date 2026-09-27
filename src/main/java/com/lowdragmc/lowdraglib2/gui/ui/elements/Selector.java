@@ -27,6 +27,7 @@ import lombok.experimental.Accessors;
 import net.minecraft.MethodsReturnNonnullByDefault;
 import net.minecraft.network.chat.Component;
 import org.appliedenergistics.yoga.*;
+import org.joml.Vector2f;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 
@@ -144,6 +145,9 @@ public class Selector<T> extends BindableUIElement<T> {
 
     // runtime
     protected final Map<T, Button> candidateButtons = new HashMap<>();
+    // the anchor's on-screen position when the dialog was last positioned; used to close the dialog
+    // if the selector moves (e.g. an ancestor ScrollerView scrolls) so it never lingers detached.
+    private float dialogAnchorX, dialogAnchorY;
 
     public Selector() {
         getLayout().height(14);
@@ -190,17 +194,7 @@ public class Selector<T> extends BindableUIElement<T> {
                     hide();
                 })
                 .addEventListener(UIEvents.LAYOUT_CHANGED, e -> {
-                    var mui = getModularUI();
-                    if (mui != null) {
-                        var root = mui.ui.rootElement;
-                        e.currentElement.layout(layout -> {
-                            var x = this.getPositionX();
-                            var y = this.getPositionY();
-                            layout.left(x - root.getLayoutX());
-                            layout.top(y - root.getLayoutY() + this.getSizeHeight());
-                            layout.width(this.getSizeWidth());
-                        });
-                    }
+                    this.updateDialogPosition();
                     e.currentElement.adaptPositionToScreen();
                 })
                 .stopInteractionEventsPropagation();
@@ -357,6 +351,34 @@ public class Selector<T> extends BindableUIElement<T> {
         return this.dialog.getParent() != null;
     }
 
+    protected void updateDialogPosition() {
+        var mui = getModularUI();
+        if (mui != null) {
+            var root = mui.ui.rootElement;
+            var worldPos = this.localToWorld(new Vector2f(getPositionX(), getPositionY() + getSizeHeight()));
+            var pos = root.worldToLocalLayoutOffset(worldPos);
+            this.dialog.layout(layout -> {
+                layout.left(pos.x);
+                layout.top(pos.y);
+                layout.width(Math.max(this.getSizeWidth(), 50));
+            });
+            this.dialogAnchorX = getPositionX();
+            this.dialogAnchorY = getPositionY();
+        }
+    }
+
+    @Override
+    public void screenTick() {
+        super.screenTick();
+        // Close the dropdown if the selector moved on screen since it was opened (e.g. an ancestor
+        // ScrollerView scrolled). The dialog is anchored to root and isn't clipped by the scroller, so
+        // rather than let it float detached we dismiss it - matching native <select> / Menu behavior.
+        // Scrolling inside the dropdown's own list does not move the selector, so it stays open then.
+        if (isOpen() && (Math.abs(getPositionX() - dialogAnchorX) > 0.5f || Math.abs(getPositionY() - dialogAnchorY) > 0.5f)) {
+            hide();
+        }
+    }
+
     public void show() {
         if (this.isOpen()) {
             return;
@@ -364,13 +386,8 @@ public class Selector<T> extends BindableUIElement<T> {
         var mui = getModularUI();
         if (mui != null) {
             var root = mui.ui.rootElement;
-            root.addChild(dialog.layout(layout -> {
-                var x = this.getPositionX();
-                var y = this.getPositionY();
-                layout.left(x - root.getLayoutX());
-                layout.top(y - root.getLayoutY() + this.getSizeHeight());
-                layout.width(this.getSizeWidth());
-            }));
+            root.addChild(dialog);
+            this.updateDialogPosition();
             this.dialog.focus();
         }
     }

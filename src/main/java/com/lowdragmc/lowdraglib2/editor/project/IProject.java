@@ -2,6 +2,7 @@ package com.lowdragmc.lowdraglib2.editor.project;
 
 import com.lowdragmc.lowdraglib2.editor.resource.Resources;
 import com.lowdragmc.lowdraglib2.editor.ui.Editor;
+import com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
@@ -56,6 +57,14 @@ public interface IProject extends INBTSerializable<CompoundTag> {
     }
 
     /**
+     * Get the icon of this project. Defaults to the icon of its {@link ProjectType}, which itself falls
+     * back to {@link ProjectType#getDefaultIcon()} when the type does not set one.
+     */
+    default IGuiTexture getIcon() {
+        return getProjectType().getIcon();
+    }
+
+    /**
      * Initialize a new empty project. This method will be called when creating a new project and before {@link #onLoad(Editor)}.
      */
     default void initNewProject() {
@@ -68,7 +77,26 @@ public interface IProject extends INBTSerializable<CompoundTag> {
     }
 
     /**
-     * Fired when the project is opened
+     * Fired when the project is opened.
+     *
+     * <p>The place to add whatever this project brings to the editor, shortcuts included:
+     * <pre>{@code
+     * public void onLoad(Editor editor) {
+     *     actions = editor.getKeymap().registerAll(
+     *             EditorAction.builder(MyIds.RUN)
+     *                     .category(KeymapCategories.GENERAL)
+     *                     .defaultChord(KeyChord.key(GLFW.GLFW_KEY_F5))
+     *                     .when(KeyContext.focusWithin(MyView.class))
+     *                     .onAction(this::run)
+     *                     .build());
+     * }
+     *
+     * public void onClosed(Editor editor) {
+     *     actions.unsubscribe();   // the editor outlives the project
+     * }
+     * }</pre>
+     *
+     * Anything registered shows up in the keymap settings and can be rebound like a built-in action.
      */
     default void onLoad(Editor editor) {
     }

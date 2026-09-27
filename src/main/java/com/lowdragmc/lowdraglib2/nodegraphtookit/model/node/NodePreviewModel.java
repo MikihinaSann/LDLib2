@@ -1,7 +1,21 @@
 package com.lowdragmc.lowdraglib2.nodegraphtookit.model.node;
 
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.GraphElement;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.node.NodePreviewElement;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.GraphElementModel;
-public class NodePreviewModel extends GraphElementModel {
+import com.lowdragmc.lowdraglib2.nodegraphtookit.model.IGraphElementUIModel;
+import org.jetbrains.annotations.Nullable;
+
+/**
+ * Model for a node's preview panel — a visual preview of the node's output rendered beneath the
+ * node body (e.g. a live shader preview in a shader graph).
+ *
+ * <p>A node opts into a preview via {@link AbstractNodeModel#hasNodePreview()} (custom nodes delegate
+ * to {@link com.lowdragmc.lowdraglib2.nodegraphtookit.api.node.Node#hasNodePreview()}). The preview's
+ * UI is produced by {@link #createElementUI()}; override {@link AbstractNodeModel#createNodePreview()}
+ * to supply a subclass with a custom {@link #createElementUI()} for fully bespoke previews.</p>
+ */
+public class NodePreviewModel extends GraphElementModel implements IGraphElementUIModel {
     private AbstractNodeModel parentNode;
     private boolean isExpanded = true;
 
@@ -9,6 +23,11 @@ public class NodePreviewModel extends GraphElementModel {
      * Creates a new node preview model.
      */
     public NodePreviewModel() {
+    }
+
+    @Override
+    public @Nullable GraphElement<?> createElementUI() {
+        return new NodePreviewElement(this);
     }
 
     /**

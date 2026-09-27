@@ -4,6 +4,8 @@ import com.google.gson.JsonParseException;
 import com.lowdragmc.lowdraglib2.core.mixins.accessor.ModelBakeryAccessor;
 import com.mojang.datafixers.util.Either;
 import com.mojang.math.Transformation;
+import net.fabricmc.api.EnvType;
+import net.fabricmc.api.Environment;
 import net.minecraft.MethodsReturnNonnullByDefault;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.block.model.BlockModel;
@@ -24,6 +26,13 @@ import org.joml.Vector3f;
 import javax.annotation.Nonnull;
 import javax.annotation.ParametersAreNonnullByDefault;
 import java.util.function.Function;
+
+/**
+ * Author: KilaBash
+ * Date: 2022/04/24
+ * Description:
+ */
+@Environment(EnvType.CLIENT)
 @ParametersAreNonnullByDefault
 @MethodsReturnNonnullByDefault
 public class ModelFactory {
@@ -50,7 +59,7 @@ public class ModelFactory {
                 return getUnBakedModel(location);
             }
 
-            public UnbakedModel getTopLevelModel(ModelResourceLocation modelResourceLocation) {
+            public @Nullable UnbakedModel getTopLevelModel(ModelResourceLocation modelResourceLocation) {
                 return ModelFactory.getTopLevelModel(modelResourceLocation);
             }
 
@@ -79,17 +88,120 @@ public class ModelFactory {
 
             @Override
             public BakedModel bake(ResourceLocation location, ModelState transform) {
-                return this.bake(location, transform, getModelTextureGetter());
+                var model = this.bake(location, transform, getModelTextureGetter());
+                if (model == null) {
+                    throw new IllegalStateException("Unable to bake model " + location);
+                }
+                return model;
+            }
+        };
+    }
+
+    public static ModelBaker getRegisteredModelBaker() {
+        return new ModelBaker() {
+            @Override
+            public UnbakedModel getModel(ResourceLocation location) {
+                var model = getTopLevelModel(new ModelResourceLocation(location, "fabric_resource"));
+                if (model != null) return model;
+                var missing = getTopLevelModel(ModelBakery.MISSING_MODEL_VARIANT);
+                if (missing == null) {
+                    throw new IllegalStateException("Missing model is not registered");
+                }
+                return missing;
+            }
+
+            public @Nullable UnbakedModel getTopLevelModel(ModelResourceLocation modelResourceLocation) {
+                return ModelFactory.getTopLevelModel(modelResourceLocation);
+            }
+
+            public @Nullable BakedModel bake(ResourceLocation location, ModelState state, Function<Material, TextureAtlasSprite> sprites) {
+                UnbakedModel unbakedmodel = this.getModel(location);
+                if (unbakedmodel instanceof BlockModel blockmodel) {
+                    if (blockmodel.getRootModel() == ModelBakery.GENERATION_MARKER) {
+                        return ITEM_MODEL_GENERATOR.generateBlockModel(sprites, blockmodel).bake(this, blockmodel, sprites, state, false);
+                    }
+                }
+                return unbakedmodel.bake(this, sprites, state);
+            }
+
+            public @Nullable BakedModel bakeUncached(UnbakedModel unbakedModel, ModelState modelState, Function<Material, TextureAtlasSprite> function) {
+                if (unbakedModel instanceof BlockModel blockmodel) {
+                    if (blockmodel.getRootModel() == ModelBakery.GENERATION_MARKER) {
+                        return ITEM_MODEL_GENERATOR.generateBlockModel(function, blockmodel).bake(this, blockmodel, function, modelState, false);
+                    }
+                }
+                return unbakedModel.bake(this, function, modelState);
+            }
+
+            public Function<Material, TextureAtlasSprite> getModelTextureGetter() {
+                return Material::sprite;
+            }
+
+            @Override
+            public BakedModel bake(ResourceLocation location, ModelState transform) {
+                var model = this.bake(location, transform, getModelTextureGetter());
+                if (model == null) {
+                    throw new IllegalStateException("Unable to bake registered model " + location);
+                }
+                return model;
             }
         };
     }
 
     public static UnbakedModel getUnBakedModel(ResourceLocation modelLocation) {
-        return ((ModelBakeryAccessor)getModelBakery()).invokeGetModel(modelLocation);
+        var modelBakery = getModelBakery();
+        try {
+            synchronized (modelBakery) {
+                return ((ModelBakeryAccessor) modelBakery).invokeGetModel(modelLocation);
+            }
+        } catch (Throwable ignored) {
+            return ((ModelBakeryAccessor) modelBakery).getMissingModel();
+        }
     }
 
-    public static UnbakedModel getTopLevelModel(ModelResourceLocation modelLocation) {
+    public static @Nullable UnbakedModel getTopLevelModel(ModelResourceLocation modelLocation) {
         return ((ModelBakeryAccessor)getModelBakery()).getTopLevelModels().get(modelLocation);
+    }
+
+    /**
+     * Dynamically loads and fully resolves an {@link UnbakedModel} that was not registered through
+     * the {@code ModelEvent.RegisterAdditional} pipeline (e.g. a renderer created after the initial
+     * resource reload has finished).
+     * <p>
+     * {@code ModelBakery#getModel(ResourceLocation)} mutates
+     * non-thread-safe internal maps ({@code unbakedCache} / {@code loadingStack}). Both the load and
+     * the recursive {@link UnbakedModel#resolveParents(Function)} call (which resolves via the same
+     * {@code getModel}) are performed inside a single {@code synchronized} block on the live bakery
+     * instance so that all our accesses are serialized and no unsynchronized call escapes. This
+     * mirrors what {@code ModelBakery} does for its top-level models in its constructor and is
+     * idempotent if called again for the same model.
+     * <p>
+     * Textures are not re-stitched: any texture not already present in the atlas resolves to the
+     * missing sprite.
+     */
+    public static UnbakedModel loadUnbakedModelDynamically(ResourceLocation modelLocation) {
+        var modelBakery = getModelBakery();
+        var accessor = (ModelBakeryAccessor) modelBakery;
+        synchronized (modelBakery) {
+            try {
+                var model = accessor.invokeGetModel(modelLocation);
+                model.resolveParents(accessor::invokeGetModel);
+                return model;
+            } catch (Throwable ignored) {
+                return accessor.getMissingModel();
+            }
+        }
+    }
+
+    public static @Nullable UnbakedModel getCachedModel(ResourceLocation modelLocation) {
+        var modelBakery = getModelBakery();
+        try {
+            synchronized (modelBakery) {
+                return ((ModelBakeryAccessor) modelBakery).getUnbakedCache().get(modelLocation);
+            }
+        } catch (Throwable ignored) {
+            return ((ModelBakeryAccessor) modelBakery).getMissingModel();
+        }
     }
 
     public static Quaternionf getQuaternion(Direction facing) {

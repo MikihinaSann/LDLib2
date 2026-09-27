@@ -14,8 +14,6 @@ package com.lowdragmc.lowdraglib2.gui.util;
 //import net.minecraft.network.chat.Component;
 //import net.minecraft.network.chat.TextComponent;
 //import net.minecraft.util.FastColor;
-//import net.neoforged.neoforge.api.distmarker.Dist;
-//import net.neoforged.neoforge.api.distmarker.OnlyIn;
 //import org.apache.http.util.Asserts;
 //
 //import java.util.Arrays;

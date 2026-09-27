@@ -6,6 +6,7 @@ import com.lowdragmc.lowdraglib2.math.Rect;
 import com.lowdragmc.lowdraglib2.utils.ColorUtils;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
+import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.util.Mth;
@@ -15,10 +16,6 @@ import org.joml.Matrix4f;
 import org.joml.Vector3f;
 import org.joml.Vector4f;
 
-import org.jetbrains.annotations.Nullable;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Stack;
 import java.util.function.Consumer;
 
 import org.lwjgl.opengl.GL30;
@@ -36,6 +33,13 @@ public class GUIContext {
     public EnhancedPoseStack pose;
     @Environment(EnvType.CLIENT)
     public Minecraft mc;
+    /**
+     * Where this frame is being drawn. Defaults to the game window; a UI rendered into an off-screen
+     * target sets its own, which is what keeps the scissor box and {@link UIVisualLayer} sizing
+     * honest.
+     */
+    @Environment(EnvType.CLIENT)
+    public UISurface surface = UISurface.main();
 
     // runtime
     @Environment(EnvType.CLIENT)
@@ -49,16 +53,22 @@ public class GUIContext {
     @Environment(EnvType.CLIENT)
     public float localMouseX, localMouseY;
     @Environment(EnvType.CLIENT)
-    public Stack<UIVisualLayer> visualLayers = new Stack<>();
+    public ObjectArrayList<UIVisualLayer> visualLayers = new ObjectArrayList<>();
     @Environment(EnvType.CLIENT)
-    public final Stack<Rect> scissorStack = new Stack<>();
+    public final ObjectArrayList<Rect> scissorStack = new ObjectArrayList<>();
     @Environment(EnvType.CLIENT)
-    private final List<PostCall> postRenderingCalls = new ArrayList<>();
+    private final ObjectArrayList<PostCall> postRenderingCalls = new ObjectArrayList<>();
     private record PostCall(Consumer<GUIContext> call, PoseStack.Pose pose) {}
     private int lastFBO = -1;
     
     @Environment(EnvType.CLIENT)
     public static GUIContext of(ModularUI modularUI, GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        return of(modularUI, graphics, mouseX, mouseY, partialTick, UISurface.main());
+    }
+
+    @Environment(EnvType.CLIENT)
+    public static GUIContext of(ModularUI modularUI, GuiGraphics graphics, int mouseX, int mouseY, float partialTick,
+                                UISurface surface) {
         var context = new GUIContext();
         context.modularUI = modularUI;
         context.graphics = graphics;
@@ -67,6 +77,7 @@ public class GUIContext {
         context.partialTick = partialTick;
         context.pose = new EnhancedPoseStack(graphics.pose()).setOnTransform(context::refreshLocalMouse);
         context.mc = Minecraft.getInstance();
+        context.surface = surface;
         context.refreshLocalMouse();
         return context;
     }
@@ -86,15 +97,21 @@ public class GUIContext {
         var realPos = trans.transform(new Vector4f(x, y, 0, 1));
         var realPos2 = trans.transform(new Vector4f(x + width, y + height, 0, 1));
         var rect = Rect.of(Mth.floor(realPos.x), Mth.floor(realPos.y), Mth.ceil(realPos2.x), Mth.ceil(realPos2.y));
-        var peek = scissorStack.isEmpty() ? null : scissorStack.peek();
-        scissorStack.push(peek == null ? rect : peek.intersects(rect));
+        var peek = scissorStack.isEmpty() ? null : scissorStack.top();
+        var applied = peek == null ? rect : peek.intersects(rect);
+        scissorStack.push(applied);
+        // GuiGraphics keeps owning the stack, so a nested vanilla scissor still intersects with ours
+        // — but it flips the box against the game window, so an off-screen surface has to redo the
+        // pixel math. No-op on the main window.
         graphics.enableScissor(rect.left, rect.up, rect.right, rect.down);
+        UIScissor.reapply(surface, applied);
     }
 
     @Environment(EnvType.CLIENT)
     public void disableScissor() {
         graphics.disableScissor();
         scissorStack.pop();
+        UIScissor.reapply(surface, scissorStack.isEmpty() ? null : scissorStack.top());
     }
 
     @Environment(EnvType.CLIENT)
@@ -123,15 +140,14 @@ public class GUIContext {
         if (popped != null) {
             graphics.flush();
             popped.unbind();
-            var mainTarget = Minecraft.getInstance().getMainRenderTarget();
             if (visualLayers.isEmpty()) {
                 if (lastFBO == -1) {
-                    mainTarget.bindWrite(false);
+                    surface.target().bindWrite(false);
                 } else {
                     GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, lastFBO);
                 }
             } else {
-                visualLayers.peek().bind(this);
+                visualLayers.top().bind(this);
             }
             popped.draw(this);
             popped.release();
@@ -158,7 +174,10 @@ public class GUIContext {
     }
 
     public void callPostRendering() {
-        for (var postRenderingCall : postRenderingCalls) {
+        final Object[] postCallsElements = postRenderingCalls.elements();
+
+        for (int i = 0; i < postRenderingCalls.size(); i++) {
+            final PostCall postRenderingCall = (PostCall) postCallsElements[i];
             pose.pushPose();
             pose.setIdentity();
             pose.mulPose(postRenderingCall.pose.pose());

@@ -18,6 +18,8 @@ import com.lowdragmc.lowdraglib2.gui.ui.style.Property;
 import com.lowdragmc.lowdraglib2.gui.ui.style.PropertyRegistry;
 import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
 import com.lowdragmc.lowdraglib2.gui.util.DrawerHelper;
+import com.lowdragmc.lowdraglib2.integration.xei.XEITooltipContext;
+import com.lowdragmc.lowdraglib2.integration.kjs.KJSBindings;
 import com.lowdragmc.lowdraglib2.registry.annotation.LDLRegister;
 import com.lowdragmc.lowdraglib2.syncdata.annotation.SkipPersistedValue;
 import com.lowdragmc.lowdraglib2.utils.XmlUtils;
@@ -36,6 +38,7 @@ import javax.annotation.Nonnull;
 import javax.annotation.ParametersAreNonnullByDefault;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
@@ -44,6 +47,7 @@ import java.util.stream.Stream;
 
 @ParametersAreNonnullByDefault
 @MethodsReturnNonnullByDefault
+@KJSBindings
 @LDLRegister(name = "item-slot", group = "inventory", registry = "ldlib2:ui_element")
 public class ItemSlot extends BindableUIElement<ItemStack> {
     public final static IGuiTexture ITEM_SLOT_TEXTURE = Sprites.RECT_RD_T.copy().setColor(0xffbbbbbb);
@@ -179,7 +183,6 @@ public class ItemSlot extends BindableUIElement<ItemStack> {
         return this;
     }
 
-
     private void addSlotToTheMenu() {
         if (slot instanceof LocalSlot) return;
         updateSlotPosition();
@@ -225,9 +228,20 @@ public class ItemSlot extends BindableUIElement<ItemStack> {
         return setValue(itemStack, notify);
     }
 
+    /**
+     * Delegates to {@link #getFullTooltipTexts(boolean)}, override that one instead of this.
+     */
     public List<Component> getFullTooltipTexts() {
+        return getFullTooltipTexts(true);
+    }
+
+    /**
+     * @param withItemTooltips whether the vanilla tooltip of the item should be included. XEI recipe slots
+     *                         render it themselves, so they ask for the tooltips without it.
+     */
+    public List<Component> getFullTooltipTexts(boolean withItemTooltips) {
         var tips = new ArrayList<Component>();
-        if (slotStyle.showItemTooltips()) {
+        if (withItemTooltips && slotStyle.showItemTooltips()) {
             tips.addAll(DrawerHelper.getItemToolTip(getValue()));
         }
         tips.addAll(getStyle().tooltips().asList());
@@ -237,6 +251,11 @@ public class ItemSlot extends BindableUIElement<ItemStack> {
     protected void onHoverTooltips(UIEvent event) {
         var item = getValue();
         if (item.isEmpty()) return;
+        // an XEI recipe slot renders the vanilla tooltip and the tooltip image itself, do not repeat them there
+        if (event.customData == XEITooltipContext.RECIPE_SLOT) {
+            event.hoverTooltips = new HoverTooltips(getFullTooltipTexts(false), null, null, null);
+            return;
+        }
         event.hoverTooltips = new HoverTooltips(getFullTooltipTexts(), item.getTooltipImage().orElse(null), null, item);
     }
 
@@ -387,5 +406,4 @@ public class ItemSlot extends BindableUIElement<ItemStack> {
         }
         super.loadXml(element);
     }
-
 }

@@ -13,7 +13,7 @@ import com.lowdragmc.lowdraglib2.gui.ui.style.StyleOrigin;
 import com.lowdragmc.lowdraglib2.gui.ui.style.StyleRule;
 import com.lowdragmc.lowdraglib2.registry.annotation.LDLRegister;
 import com.lowdragmc.lowdraglib2.utils.TagBuilder;
-
+import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import lombok.Getter;
 import lombok.experimental.Accessors;
 import net.minecraft.MethodsReturnNonnullByDefault;
@@ -79,7 +79,7 @@ public class UITemplateElement extends UIElement {
             }
             // apply rules
             addStyleRules(styleRules);
-            Stack<UIElement> elements = new Stack<>();
+            ObjectArrayList<UIElement> elements = new ObjectArrayList<>();
             this.getChildren().forEach(elements::push);
             while (!elements.isEmpty()) {
                 var peek = elements.pop();

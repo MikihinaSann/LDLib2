@@ -10,6 +10,8 @@ import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 
 import javax.annotation.ParametersAreNonnullByDefault;
+import java.nio.file.Path;
+import java.util.List;
 
 @Environment(EnvType.CLIENT)
 @ParametersAreNonnullByDefault
@@ -47,6 +49,13 @@ public class ModularUIScreen extends Screen {
     @Override
     public boolean isPauseScreen() {
         return false;
+    }
+
+    @Override
+    public void onFilesDrop(List<Path> paths) {
+        if (!modularUI.onFilesDrop(paths.stream().map(Path::toFile).toList())) {
+            super.onFilesDrop(paths);
+        }
     }
 
     public void renderBackground(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {

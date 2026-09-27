@@ -7,6 +7,8 @@ import com.mojang.blaze3d.platform.GlStateManager;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.*;
 import lombok.Getter;
+import net.fabricmc.api.EnvType;
+import net.fabricmc.api.Environment;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.core.BlockPos;
@@ -18,6 +20,19 @@ import org.lwjgl.opengl.GL11;
 
 import javax.annotation.Nonnull;
 import org.jetbrains.annotations.Nullable;
+import com.lowdragmc.lowdraglib2.client.RenderTargetScope;
+
+/**
+ * Created with IntelliJ IDEA.
+ *
+ * @Author: KilaBash
+ * @Date: 2021/08/23
+ * @Description: It looks similar to {@link ImmediateWorldSceneRenderer}, but totally different.
+ * It uses FBO and is more universality and efficient(X).
+ * FBO can be rendered anywhere more flexibly, not just in the GUI.
+ * If you have scene rendering needs, you will love this FBO renderer.
+ */
+@Environment(EnvType.CLIENT)
 public class FBOWorldSceneRenderer extends WorldSceneRenderer {
     @Getter
     private int resolutionWidth = 1080;
@@ -25,6 +40,10 @@ public class FBOWorldSceneRenderer extends WorldSceneRenderer {
     private int resolutionHeight = 1080;
     @Getter
     private RenderTarget fbo;
+    /** The color the FBO clears to before each scene draw. An opaque background sidesteps every
+     *  alpha-compositing concern when the FBO is drawn into a GUI; the transparent-black default
+     *  preserves the historical overlay behavior. */
+    private float clearRed = 0.0f, clearGreen = 0.0f, clearBlue = 0.0f, clearAlpha = 0.0f;
 
     public FBOWorldSceneRenderer(Level world, int resolutionWidth, int resolutionHeight) {
         super(world);
@@ -36,10 +55,32 @@ public class FBOWorldSceneRenderer extends WorldSceneRenderer {
         this.fbo = fbo;
     }
 
+    /** Set the color the FBO clears to before each scene draw (see {@link #clearRed}). */
+    public FBOWorldSceneRenderer setClearColor(float red, float green, float blue, float alpha) {
+        this.clearRed = red;
+        this.clearGreen = green;
+        this.clearBlue = blue;
+        this.clearAlpha = alpha;
+        return this;
+    }
+
+    /** The base render pass re-clears the (already bound) FBO each frame with a hardcoded transparent
+     *  black — honour the configured clear color instead, else {@link #setClearColor} has no effect. */
+    @Override
+    protected void clearView(int x, int y, int width, int height) {
+        RenderSystem.clearColor(clearRed, clearGreen, clearBlue, clearAlpha);
+        RenderSystem.clear(GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT, Minecraft.ON_OSX);
+    }
+
     /***
      * This will modify the size of the FBO. You'd better know what you're doing before you call it.
+     * Invalid (non-positive) sizes are ignored — UI layouts transiently report 0x0 during relayout,
+     * and resizing a render target to nothing crashes GL.
      */
     public void setFBOSize(int resolutionWidth, int resolutionHeight) {
+        if (resolutionWidth <= 0 || resolutionHeight <= 0) {
+            return;
+        }
         this.resolutionWidth = resolutionWidth;
         this.resolutionHeight = resolutionHeight;
         if (fbo != null) {
@@ -48,16 +89,16 @@ public class FBOWorldSceneRenderer extends WorldSceneRenderer {
     }
 
     public BlockHitResult screenPos2BlockPosFace(int mouseX, int mouseY) {
-        int lastID = bindFBO();
+        var scope = bindFBO();
         BlockHitResult looking = super.screenPos2BlockPosFace(mouseX, mouseY, 0, 0, this.resolutionWidth, this.resolutionHeight);
-        unbindFBO(lastID);
+        unbindFBO(scope);
         return looking;
     }
 
     public Vector3f blockPos2ScreenPos(BlockPos pos, boolean depth){
-        int lastID = bindFBO();
+        var scope = bindFBO();
         Vector3f winPos = super.blockPos2ScreenPos(pos, depth, 0, 0, this.resolutionWidth, this.resolutionHeight);
-        unbindFBO(lastID);
+        unbindFBO(scope);
         return winPos;
     }
 
@@ -85,11 +126,13 @@ public class FBOWorldSceneRenderer extends WorldSceneRenderer {
     }
 
     public void drawScene(float x, float y, float width, float height, float mouseX, float mouseY) {
+        // before the FBO is bound, otherwise the GUI geometry this drains would be drawn into it
+        flushPendingGuiBatches();
         // bind to FBO
-        int lastID = bindFBO();
+        var scope = bindFBO();
         super.render(new PoseStack(), 0, 0, this.resolutionWidth, this.resolutionHeight, (int) (this.resolutionWidth * (mouseX - x) / width), (int) (this.resolutionHeight * (1 - (mouseY - y) / height)));
         // unbind FBO
-        unbindFBO(lastID);
+        unbindFBO(scope);
     }
 
     public void render(@Nonnull PoseStack poseStack, float x, float y, float width, float height, float mouseX, float mouseY) {
@@ -112,23 +155,24 @@ public class FBOWorldSceneRenderer extends WorldSceneRenderer {
         render(poseStack, x, y, width, height, (float) mouseX, (float) mouseY);
     }
 
-    private int bindFBO(){
+    private RenderTargetScope bindFBO(){
         if (!checkFBOValid()) {
             createFBO();
         }
         GL11.glDisable(GL11.GL_SCISSOR_TEST);
-        int lastID = GL11.glGetInteger(EXTFramebufferObject.GL_FRAMEBUFFER_BINDING_EXT);
-        fbo.setClearColor(0.0F, 0.0F, 0.0F, 0.0F);
+        var scope = RenderTargetScope.capture();
+        fbo.setClearColor(clearRed, clearGreen, clearBlue, clearAlpha);
         fbo.clear(Minecraft.ON_OSX);
         fbo.bindWrite(true);
-        return lastID;
+        return scope;
     }
 
-    private void unbindFBO(int lastID){
+    private void unbindFBO(RenderTargetScope scope){
         fbo.unbindRead();
-        GlStateManager._glBindFramebuffer(36160, lastID);
-        var mainBuffer = Minecraft.getInstance().getMainRenderTarget();
-        GlStateManager._viewport(0, 0, mainBuffer.viewWidth, mainBuffer.viewHeight);
+        // Back to whatever was bound, not to the main render target: this scene may be nested inside
+        // a UI visual layer, or inside a UI hosted in another window, and neither of those is the
+        // game's own frame.
+        scope.close();
         GL11.glEnable(GL11.GL_SCISSOR_TEST);
     }
 

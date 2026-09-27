@@ -13,7 +13,9 @@ import net.minecraft.network.chat.Component;
 import org.jetbrains.annotations.Nullable;
 
 import javax.annotation.ParametersAreNonnullByDefault;
+import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 @ParametersAreNonnullByDefault
@@ -52,6 +54,11 @@ public class Label extends TextElement implements IBindable<Component>, IDataCon
             removed.unsubscribe();
         }
         return this;
+    }
+
+    @Override
+    public Collection<IDataProvider<Component>> getBoundDataSources() {
+        return dataSources.keySet();
     }
 
     @Override

@@ -9,10 +9,14 @@ import lombok.Getter;
 import lombok.Setter;
 import dev.architectury.fluid.FluidStack;
 import com.lowdragmc.lowdraglib2.utils.fluids.FluidTank;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.nbt.CompoundTag;
+import com.lowdragmc.lowdraglib2.utils.INBTSerializable;
+import org.jetbrains.annotations.NotNull;
 
 import java.util.function.Predicate;
 
-public class FluidStorage extends FluidTank implements IFluidHandlerModifiable, IContentChangeAware {
+public class FluidStorage extends FluidTank implements INBTSerializable<CompoundTag>, IFluidHandlerModifiable, IContentChangeAware {
     @Getter
     @Setter
     private Runnable onContentsChanged = Runnables.doNothing();
@@ -50,4 +54,23 @@ public class FluidStorage extends FluidTank implements IFluidHandlerModifiable, 
         return storage;
     }
 
+    @Override
+    public CompoundTag serializeNBT(@NotNull HolderLookup.Provider provider) {
+        var tag = new CompoundTag();
+        if (!fluid.isEmpty()) {
+            tag.put("fluid", fluid.write(provider, new CompoundTag()));
+        }
+        tag.putInt("capacity", capacity);
+        return tag;
+    }
+
+    @Override
+    public void deserializeNBT(@NotNull HolderLookup.Provider provider, CompoundTag nbt) {
+        capacity = nbt.getInt("capacity");
+        if (nbt.contains("fluid")) {
+            setFluid(FluidStack.read(provider, nbt.getCompound("fluid")).orElse(FluidStack.empty()));
+        } else {
+            setFluid(FluidStack.empty());
+        }
+    }
 }

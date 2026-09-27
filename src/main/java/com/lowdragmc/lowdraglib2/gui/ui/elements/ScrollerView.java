@@ -197,15 +197,28 @@ public class ScrollerView extends UIElement {
         });
     }
 
+    /**
+     * Routes the wheel to whichever scroller it belongs to, with shift swapping the two axes.
+     *
+     * <p>Almost no mouse has a horizontal wheel, so without the swap the only way to move a
+     * both-directions view sideways is to drag its scroll bar — and shift is what every desktop
+     * application uses for this.
+     *
+     * <p>Only in {@link ScrollerMode#BOTH}. A horizontal-only view already takes the ordinary wheel,
+     * and a vertical-only one has nothing to swap onto: honouring shift there would turn shift+wheel
+     * from "scroll this list" into "do nothing", which is a regression rather than a feature.
+     */
     protected void onScrollWheel(UIEvent event) {
-        var mode = scrollerViewStyle.mode();
-        if (event.deltaY != 0 && (mode == ScrollerMode.VERTICAL || mode == ScrollerMode.BOTH)) {
-            verticalScroller.onScrollWheel(event);
-        }
-        if (event.deltaX != 0 && (mode == ScrollerMode.HORIZONTAL || mode == ScrollerMode.BOTH)) {
-            horizontalScroller.onScrollWheel(event);
-        } else if (event.deltaY != 0 && mode == ScrollerMode.HORIZONTAL) {
-            horizontalScroller.onScrollWheel(event);
+        switch (scrollerViewStyle.mode()) {
+            case VERTICAL -> verticalScroller.scrollByWheel(event.deltaY);
+            // Through the scroller's own handler, so its "fall back to the vertical wheel" rule stays
+            // in the one place that owns it.
+            case HORIZONTAL -> horizontalScroller.onScrollWheel(event);
+            case BOTH -> {
+                var swapped = event.isShiftDown();
+                verticalScroller.scrollByWheel(swapped ? event.deltaX : event.deltaY);
+                horizontalScroller.scrollByWheel(swapped ? event.deltaY : event.deltaX);
+            }
         }
     }
 
@@ -256,6 +269,11 @@ public class ScrollerView extends UIElement {
     }
 
     private void updateScrollers() {
+        if (!isDisplayed()) return;   // avoid adaptive broken
+        // Ancestor display:none (or first frame before layout) leaves our own size at 0.
+        // Reverse-deriving chrome from getSizeHeight() - viewPort.getContentHeight() would
+        // collapse to 0 and bake a zero-chrome important override into our height/width.
+        if (getSizeWidth() <= 0 || getSizeHeight() <= 0) return;
         var lastContainerWidth = getContainerWidth();
         var lastContainerHeight = getContainerHeight();
         var mode = scrollerViewStyle.mode();
@@ -341,6 +359,55 @@ public class ScrollerView extends UIElement {
 
     public boolean hasScrollViewChild(UIElement child) {
         return viewContainer.hasChild(child);
+    }
+
+    /**
+     * Scrolls the view to make the given scroll view child visible.
+     * It scrolls as little as possible, so nothing happens if the child is already fully visible.
+     *
+     * @param child the child added by {@link #addScrollViewChild(UIElement)}
+     * @return false if the given element is not a scroll view child, or if the layout has not been computed yet.
+     *         In the latter case, you may want to retry after the layout is updated.
+     */
+    public boolean scrollToChild(@Nullable UIElement child) {
+        if (child == null || !hasScrollViewChild(child)) return false;
+        // the layout is not available yet, e.g. the scroller view has not been displayed for a frame.
+        if (viewPort.getContentWidth() <= 0 || viewPort.getContentHeight() <= 0) return false;
+        var location = child.getTaffyLayout().location();
+        var mode = scrollerViewStyle.mode();
+        if (mode == ScrollerMode.VERTICAL || mode == ScrollerMode.BOTH) {
+            scrollAxisToChild(verticalScroller, location.y, child.getSizeHeight(), viewPort.getContentHeight(), getContainerHeight());
+        }
+        if (mode == ScrollerMode.HORIZONTAL || mode == ScrollerMode.BOTH) {
+            scrollAxisToChild(horizontalScroller, location.x, child.getSizeWidth(), viewPort.getContentWidth(), getContainerWidth());
+        }
+        return true;
+    }
+
+    /**
+     * Same as {@link #scrollToChild(UIElement)}, but if the layout is not available yet, e.g. the child was just
+     * added, it retries as soon as the layout is updated.
+     */
+    public void scrollToChildDelayed(@Nullable UIElement child) {
+        if (child == null || scrollToChild(child)) return;
+        viewContainer.addEventListener(UIEvents.LAYOUT_CHANGED, event -> {
+            event.currentElement.removeEventListener(UIEvents.LAYOUT_CHANGED, event.currentListener);
+            scrollToChild(child);
+        });
+    }
+
+    private static void scrollAxisToChild(Scroller scroller, float childOffset, float childSize, float portSize, float containerSize) {
+        var range = containerSize - portSize;
+        if (range <= 0) return; // the whole container fits into the view port, nothing to scroll
+        var scrolled = scroller.getNormalizedValue() * range;
+        if (Float.isNaN(scrolled)) scrolled = 0;
+        var target = scrolled;
+        if (childOffset < scrolled) { // the child is before the view port
+            target = childOffset;
+        } else if (childOffset + childSize > scrolled + portSize) { // the child is after the view port
+            target = childOffset + childSize - portSize;
+        }
+        scroller.setNormalizedValue(Mth.clamp(target, 0, range) / range);
     }
 
     public ScrollerView addScrollViewChildAt(@Nullable UIElement child, int index) {

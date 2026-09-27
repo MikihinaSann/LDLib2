@@ -32,31 +32,28 @@ public class GraphAnnotationRegistrationTest {
     }
 
     @GameTest(template = "empty")
-    public static void supportNodesAreDiscoveredFromAnnotations(GameTestHelper helper) {
+    public static void portOrientationFollowsBuilder(GameTestHelper helper) {
         var graph = new TestGraph();
-        var supportNodes = graph.graphModel.getSupportNodes();
-        var expectedNodes = Set.of(
-                TestAddNode.class,
-                TestConstantNode.class,
-                TestStringConcatNode.class,
-                TestColorBlendNode.class
-        );
+        var node = graph.graphModel.createNodeModel(new TestVerticalNode(), new org.joml.Vector2f(0, 0));
 
-        if (!supportNodes.containsAll(expectedNodes)) {
-            helper.fail("Annotated nodes were not all discovered: " + supportNodes);
-            return;
+        var inputs = node.getInputsById();
+        var outputs = node.getOutputsById();
+
+        if (inputs.get("v_in1") == null
+                || inputs.get("v_in1").getOrientation() != com.lowdragmc.lowdraglib2.nodegraphtookit.api.port.PortOrientation.Vertical) {
+            helper.fail("v_in1 should be a Vertical input port"); return;
         }
-        if (supportNodes.contains(UnboundTestNode.class)) {
-            helper.fail("Node bound to another graph should not be supported");
-            return;
+        if (inputs.get("h_in") == null
+                || inputs.get("h_in").getOrientation() != com.lowdragmc.lowdraglib2.nodegraphtookit.api.port.PortOrientation.Horizontal) {
+            helper.fail("h_in should be a Horizontal input port"); return;
         }
-        if (supportNodes.contains(ModFilteredTestNode.class)) {
-            helper.fail("modID filtered node should not be supported");
-            return;
+        if (outputs.get("v_out1") == null
+                || outputs.get("v_out1").getOrientation() != com.lowdragmc.lowdraglib2.nodegraphtookit.api.port.PortOrientation.Vertical) {
+            helper.fail("v_out1 should be a Vertical output port"); return;
         }
-        if (supportNodes.size() != expectedNodes.size()) {
-            helper.fail("Unexpected support node count: " + supportNodes.size() + " -> " + supportNodes);
-            return;
+        if (outputs.get("h_out") == null
+                || outputs.get("h_out").getOrientation() != com.lowdragmc.lowdraglib2.nodegraphtookit.api.port.PortOrientation.Horizontal) {
+            helper.fail("h_out should be a Horizontal output port"); return;
         }
 
         helper.succeed();

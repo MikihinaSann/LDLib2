@@ -100,6 +100,10 @@ public class LDLibShaders {
     private static ShaderInstance SDFRect;
     @Getter
     private static ShaderInstance guiTexture;
+    @Getter
+    private static ShaderInstance sdfText;
+    @Getter
+    private static ShaderInstance rasterText;
 
 	/**
 	 * the vertex format for HSB color, three four of float
@@ -127,6 +131,8 @@ public class LDLibShaders {
 			context.register(LDLib2.id("graph_wire"), DefaultVertexFormat.POSITION_TEX_COLOR, shaderInstance -> graphWireShader = shaderInstance);
 			context.register(LDLib2.id("sdf_rect"), DefaultVertexFormat.POSITION, shaderInstance -> SDFRect = shaderInstance);
 			context.register(LDLib2.id("gui_texture"), DefaultVertexFormat.POSITION_TEX_COLOR, shaderInstance -> guiTexture = shaderInstance);
+			context.register(LDLib2.id("sdf_text"), DefaultVertexFormat.POSITION_COLOR_TEX_LIGHTMAP, shaderInstance -> sdfText = shaderInstance);
+			context.register(LDLib2.id("raster_text"), DefaultVertexFormat.POSITION_COLOR_TEX_LIGHTMAP, shaderInstance -> rasterText = shaderInstance);
 		} catch (IOException e) {
 			throw new RuntimeException(e);
 		}

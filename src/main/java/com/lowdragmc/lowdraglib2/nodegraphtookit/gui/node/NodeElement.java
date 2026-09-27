@@ -1,15 +1,24 @@
 package com.lowdragmc.lowdraglib2.nodegraphtookit.gui.node;
 
+import com.lowdragmc.lowdraglib2.configurator.IConfigurable;
 import com.lowdragmc.lowdraglib2.configurator.annotation.Configurable;
+import com.lowdragmc.lowdraglib2.configurator.ui.Configurator;
+import com.lowdragmc.lowdraglib2.configurator.ui.ConfiguratorGroup;
+import com.lowdragmc.lowdraglib2.configurator.ui.HeaderConfigurator;
 import com.lowdragmc.lowdraglib2.gui.ColorPattern;
 import com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture;
 import com.lowdragmc.lowdraglib2.gui.ui.Style;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.GraphViewLod;
 import com.lowdragmc.lowdraglib2.gui.ui.rendering.GUIContext;
 import com.lowdragmc.lowdraglib2.gui.ui.style.Property;
 import com.lowdragmc.lowdraglib2.gui.ui.style.PropertyRegistry;
 import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
+import com.lowdragmc.lowdraglib2.gui.util.DrawerHelper;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.GraphElement;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.GraphInspector;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.dependency.ModelUpdateVisitor;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.util.NodeColors;
+import com.lowdragmc.lowdraglib2.nodegraphtookit.gui.util.RenameColorConfigurableHelper;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.ChangeHint;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.Model;
 import com.lowdragmc.lowdraglib2.nodegraphtookit.model.node.*;
@@ -18,6 +27,7 @@ import lombok.Getter;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.Objects;
 
 public class NodeElement extends GraphElement<AbstractNodeModel> {
@@ -55,12 +65,23 @@ public class NodeElement extends GraphElement<AbstractNodeModel> {
     protected @Nullable NodeOptionsInspector nodeOptionContainer;
     @Getter
     protected @Nullable PortContainerElement portContainerElement;
+    /** Preview panel rendered at the bottom of the node; present only when the model has a preview. */
+    @Getter
+    protected @Nullable GraphElement<?> nodePreviewElement;
+
+    private static final int HIGHLIGHT_TINT = 0xddffaf00;
+    private static final int HOVER_TINT = 0xaaffffff;
 
     @Getter
     private final NodeStyle nodeStyle = new NodeStyle();
+    /** Source the cached tints were built from; see {@link #tintedOverlay}. */
+    @Nullable
+    private IGuiTexture tintedOverlaySource;
+    private final IGuiTexture[] tintedOverlays = new IGuiTexture[2];
 
     public NodeElement(AbstractNodeModel nodeModel) {
         super(nodeModel);
+        addClass("__node-element__");
     }
 
     @Override
@@ -79,22 +100,40 @@ public class NodeElement extends GraphElement<AbstractNodeModel> {
         if (getModel() instanceof PortNodeModel portNodeNode) {
             parts.add(this.portContainerElement = new PortContainerElement(portNodeNode, PortContainerElement.HORIZONTAL_PORT_FILTER));
         }
+        buildPreviewPart();
+    }
+
+    /**
+     * Creates the preview panel part from the model's {@code NodePreviewModel} (the model decides the
+     * concrete element via {@link com.lowdragmc.lowdraglib2.nodegraphtookit.model.IGraphElementUIModel#createElementUI()}).
+     * Called last in {@link #buildPartList()} so subclasses can rely on the other parts existing.
+     */
+    protected void buildPreviewPart() {
+        var previewModel = getModel().getNodePreviewModel();
+        if (previewModel != null) {
+            var element = previewModel.createElementUI();
+            if (element != null) {
+                parts.add(this.nodePreviewElement = element);
+            }
+        }
     }
 
     @Override
     protected void buildUI() {
-        getLayout().positionType(TaffyPosition.ABSOLUTE);
-        getStyle().background(Sprites.RECT_SOLID);
+        // Node uses ABSOLUTE positioning so position can be driven by model coordinates — pin via IMPORTANT.
+        Style.importantPipeline(getLayout(), l -> l.positionType(TaffyPosition.ABSOLUTE));
+        Style.defaultPipeline(getStyle(), s -> s.background(Sprites.RECT_SOLID));
 
-        addChildren(nodeTittle, nodeOptionContainer, portContainerElement);
-        internalSetup();
+        // Preview panel always sits at the very bottom of the node.
+        addChildren(nodeTittle, nodeOptionContainer, portContainerElement, nodePreviewElement);
     }
 
     // endregion
 
     @Override
     public boolean hasModelDependenciesChanged() {
-        return getModel() instanceof InputOutputPortsNodeModel ioNode && !ioNode.getNodeOptions().isEmpty();
+        return (getModel() instanceof InputOutputPortsNodeModel ioNode && !ioNode.getNodeOptions().isEmpty())
+                || getModel().getNodePreviewModel() != null;
     }
 
     @Override
@@ -105,14 +144,23 @@ public class NodeElement extends GraphElement<AbstractNodeModel> {
                 getDependencies().addModelDependency(nodeOption.getPortModel());
             }
         }
+        // Depend on the preview model so preview expand/collapse and data changes refresh the node.
+        var previewModel = getModel().getNodePreviewModel();
+        if (previewModel != null) {
+            getDependencies().addModelDependency(previewModel);
+        }
     }
 
     @Override
     public void updateUIFromModel(ModelUpdateVisitor visitor) {
         var model = getModel();
-        // update layout
+        // update layout — node position is model data, so write at IMPORTANT.
         if (visitor.hasHint(ChangeHint.LAYOUT)) {
-            getLayout().left(model.getPosition().x).top(model.getPosition().y);
+            Style.importantPipeline(getLayout(), l -> l.left(model.getPosition().x).top(model.getPosition().y));
+            // Per-instance min-width floor — only applied when the model opts into resizing.
+            if (model.isResizable()) {
+                Style.importantPipeline(getLayout(), l -> l.minWidth(model.getMinWidth()));
+            }
         }
     }
 
@@ -134,21 +182,155 @@ public class NodeElement extends GraphElement<AbstractNodeModel> {
         return false;
     }
 
+    protected boolean showHoverHighlight() {
+        return isSelfOrChildHover() || isUnderRegionSelection();
+    }
+
     @Override
-    public void drawBackgroundOverlay(@NotNull GUIContext guiContext) {
-        if (isSelected()) {
-            guiContext.drawTexture(getNodeStyle().focusOverlay(),
-                    getPositionX(), getPositionY(), getSizeWidth(), getSizeHeight());
-        } else if (shouldBeHighlighted()) {
-            guiContext.drawTexture(getNodeStyle().focusOverlay().copy().setColor(0xddffaf00),
-                    getPositionX(), getPositionY(), getSizeWidth(), getSizeHeight());
-        } else {
-            var isHover = isSelfOrChildHover() || isUnderRegionSelection();
-            if (isHover) {
-                guiContext.drawTexture(getNodeStyle().focusOverlay().copy().setColor(0xaaffffff),
-                        getPositionX(), getPositionY(), getSizeWidth(), getSizeHeight());
+    protected void onSelectionInspect(GraphInspector inspector) {
+        super.onSelectionInspect(inspector);
+        if (graphView != null) inspector.setHistoryStack(graphView.getHistoryStack());
+        // GraphInspector#inspect clears and replaces, so the node's identity (name / colour) and its
+        // options have to arrive as one configurable rather than two calls.
+        inspector.inspect(IConfigurable.create(group -> {
+            RenameColorConfigurableHelper.build(getModel(), graphView).buildConfigurator(group);
+            buildOptionConfigurators(group);
+        }));
+    }
+
+    /**
+     * Adds a row per node option, which is what makes {@code IOptionBuilder#showInInspectorOnly()}
+     * mean anything: an option hidden from the node body has nowhere else to be edited.
+     *
+     * <p>Every option is listed, not only the inspector-only ones — the inspector is the node's full
+     * configuration, and an option drawn in the node body stays editable from both places. The one
+     * exception is an option that asked for {@code IOptionBuilder#showInNodeOnly()}, whose editor
+     * belongs to the body alone.
+     */
+    protected void buildOptionConfigurators(ConfiguratorGroup group) {
+        if (!(getModel() instanceof InputOutputPortsNodeModel ioNode)) return;
+        var rows = new ArrayList<Configurator>();
+        for (var nodeOption : ioNode.getNodeOptions()) {
+            if (!nodeOption.getVisibility().showInInspector()) continue;
+            var portModel = nodeOption.getPortModel();
+            // Builds into a scratch group first because the configurators come back unlabelled: in the
+            // node body FieldValueInspector draws the name itself, so IFieldConstantConfigurable
+            // creates them with an empty label. Here there is no separate label to rely on.
+            var optionGroup = new ConfiguratorGroup();
+            portModel.buildConfigurator(optionGroup); // no-op when the option opted out of a configurator
+            for (var configurator : optionGroup.getConfigurators()) {
+                configurator.setLabel(portModel.getDisplayName());
+                rows.add(configurator);
             }
         }
+        // A flat bold heading rather than a nested ConfiguratorGroup: a group indents and pads its
+        // container, and the inspector is a narrow panel where that width is worth more than the
+        // collapse affordance. Added only when there is something under it, so a node with no
+        // options - or whose options all opted out of a configurator - gets no empty section.
+        if (rows.isEmpty()) return;
+        group.addConfigurator(new HeaderConfigurator("graph.options", 5));
+        rows.forEach(group::addConfigurator);
+    }
+
+    // region LOD
+
+    /**
+     * Body colour of the flat stand-in rect drawn at {@link GraphViewLod#SIMPLIFIED}. Defaults to
+     * the node background shared by the {@code mc}/{@code modern}/{@code ore} stylesheets, so the
+     * silhouette keeps reading as a node rather than as a coloured blob.
+     */
+    protected int getLodBodyColor() {
+        return 0xFF_383838;
+    }
+
+    /**
+     * Accent colour — the title bar at {@link GraphViewLod#SIMPLIFIED} and the whole node at
+     * {@link GraphViewLod#BLOCK}. This is what makes node <em>types</em> distinguishable when
+     * zoomed out, so it uses the same resolution the minimap does.
+     */
+    protected int getLodAccentColor() {
+        return NodeColors.resolve(getModel());
+    }
+
+    /**
+     * At reduced LOD the node's SDF background — a pipeline flush plus its own draw call, per node,
+     * per frame — is replaced by a single batched quad.
+     */
+    @Override
+    public void drawBackgroundTexture(@NotNull GUIContext guiContext) {
+        var lod = lod();
+        if (lod == GraphViewLod.FULL) {
+            super.drawBackgroundTexture(guiContext);
+            return;
+        }
+        // The plain overload, i.e. RenderType.guiOverlay(): drawSolidRect emits four quad-wound
+        // vertices, so a TRIANGLES-mode target such as LDLibRenderTypes.rect() drops a corner and
+        // draws a wedge. Still fully batched - it shares the gui overlay buffer and never flushes.
+        DrawerHelper.drawSolidRect(guiContext.graphics,
+                getPositionX(), getPositionY(), getSizeWidth(), getSizeHeight(),
+                lod == GraphViewLod.BLOCK ? getLodAccentColor() : getLodBodyColor());
+    }
+
+    /**
+     * Where the subtree traversal is actually cut. A node is 15-60 elements deep; below
+     * {@link GraphViewLod#FULL} none of them are legible, so none of them are visited.
+     *
+     * <p>Skipping when culled is a correctness fix as much as a performance one:
+     * {@link com.lowdragmc.lowdraglib2.gui.ui.UIElement#drawInBackgroundInternal} already skips a
+     * culled element's background and overlay but still recurses its children, so an off-screen node
+     * used to draw its port icons with no body behind them.
+     */
+    @Override
+    protected boolean shouldDrawChildren() {
+        return !isCulled() && lod() == GraphViewLod.FULL;
+    }
+
+    /** The silhouette that replaces the subtree: a title colour bar over the body rect. */
+    @Override
+    public void drawBackgroundAdditional(@NotNull GUIContext guiContext) {
+        super.drawBackgroundAdditional(guiContext);
+        if (lod() == GraphViewLod.SIMPLIFIED && nodeTittle != null) {
+            DrawerHelper.drawSolidRect(guiContext.graphics,
+                    nodeTittle.getPositionX(), nodeTittle.getPositionY(),
+                    nodeTittle.getSizeWidth(), nodeTittle.getSizeHeight(), getLodAccentColor());
+        }
+    }
+
+    // endregion
+
+    @Override
+    public void drawBackgroundOverlay(@NotNull GUIContext guiContext) {
+        var overlay = getNodeStyle().focusOverlay();
+        IGuiTexture drawn = null;
+        if (isSelected()) {
+            drawn = overlay;
+        } else if (shouldBeHighlighted()) {
+            drawn = tintedOverlay(overlay, HIGHLIGHT_TINT, 0);
+        } else if (showHoverHighlight()) {
+            drawn = tintedOverlay(overlay, HOVER_TINT, 1);
+        }
+        if (drawn != null) {
+            guiContext.drawTexture(drawn, getPositionX(), getPositionY(), getSizeWidth(), getSizeHeight());
+        }
         super.drawBackgroundOverlay(guiContext);
+    }
+
+    /**
+     * Caches the tinted variants of the focus overlay, rebuilding only when the style swaps the
+     * source texture.
+     *
+     * <p>{@link IGuiTexture#copy()} round-trips the texture through its codec — an NBT encode plus a
+     * decode, and two registry serialization contexts. Doing that per frame per node was affordable
+     * when only a hovered node paid it, but {@link #showHoverHighlight()} is also true for every node
+     * under a rubber-band selection, so dragging a box over a large graph was paying it hundreds of
+     * times a frame.
+     */
+    private IGuiTexture tintedOverlay(IGuiTexture source, int tint, int slot) {
+        if (tintedOverlaySource != source) {
+            tintedOverlaySource = source;
+            tintedOverlays[0] = source.copy().setColor(HIGHLIGHT_TINT);
+            tintedOverlays[1] = source.copy().setColor(HOVER_TINT);
+        }
+        return tintedOverlays[slot];
     }
 }

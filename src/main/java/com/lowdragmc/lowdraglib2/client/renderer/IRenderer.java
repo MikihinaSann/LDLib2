@@ -55,6 +55,8 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+import net.fabricmc.api.EnvType;
+import net.fabricmc.api.Environment;
 
 public interface IRenderer extends ILDLRegisterClient<IRenderer, Supplier<IRenderer>>, IConfigurable, IPersistedSerializable {
     //region builtin renderer
@@ -130,6 +132,11 @@ public interface IRenderer extends ILDLRegisterClient<IRenderer, Supplier<IRende
      * Register additional models here.
      */
     default void onAdditionalModel(Consumer<ResourceLocation> registry) {
+
+    }
+
+    @Environment(EnvType.CLIENT)
+    default void clearCache() {
 
     }
 

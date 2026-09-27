@@ -9,7 +9,6 @@ import net.minecraft.resources.ResourceLocation;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
-import org.w3c.dom.ProcessingInstruction;
 
 import org.jetbrains.annotations.Nullable;
 
@@ -55,6 +54,10 @@ public final class UI {
 
     public static UI of(UIElement rootElement, ResourceLocation... stylesheets) {
         return of(rootElement, Arrays.stream(stylesheets).map(StylesheetManager.INSTANCE::getStylesheet).filter(Objects::nonNull).toList(), null);
+    }
+
+    public static UI of(UIElement rootElement, String... stylesheets) {
+        return of(rootElement, Arrays.stream(stylesheets).map(StylesheetManager.INSTANCE::getMergedStylesheets).filter(Objects::nonNull).toList(), null);
     }
 
     public static UI of(UIElement rootElement, @Nullable DynamicSizeProvider dynamicSize) {

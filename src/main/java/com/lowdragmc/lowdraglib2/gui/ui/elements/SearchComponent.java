@@ -28,12 +28,16 @@ import net.minecraft.network.chat.Component;
 import org.appliedenergistics.yoga.*;
 
 import org.jetbrains.annotations.Nullable;
+import org.joml.Vector2f;
+
 import javax.annotation.ParametersAreNonnullByDefault;
 import java.lang.reflect.Array;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
@@ -125,7 +129,7 @@ public class SearchComponent<T> extends BindableUIElement<T> {
     public final UIElement preview;
     public final UIElement dialog;
     public final UIElement listView;
-    public final ScrollerView scrollerView;
+    public final VirtualScrollerView<T> scrollerView;
     @Getter
     private final SearchStyle searchStyle = new SearchStyle();
     private UIElementProvider<T> candidateUIProvider = UIElementProvider.text(value -> value == null ?
@@ -147,6 +151,10 @@ public class SearchComponent<T> extends BindableUIElement<T> {
     protected final Map<T, Button> candidateButtons = new HashMap<>();
     @Nullable
     protected RPCEmitter searchEvent;
+    private int delayedHideGeneration;
+    // the anchor's on-screen position when the dialog was last positioned; used to close the dialog
+    // if the component moves (e.g. an ancestor ScrollerView scrolls) so it never lingers detached.
+    private float dialogAnchorX, dialogAnchorY;
 
     public SearchComponent(ISearchUI<T> searchUI) {
         this();
@@ -180,8 +188,7 @@ public class SearchComponent<T> extends BindableUIElement<T> {
         textField.setDisplay(false);
         textField.addEventListener(UIEvents.FOCUS, event -> show());
         textField.addEventListener(UIEvents.BLUR, event -> {
-            var mui = getModularUI();
-            if (mui != null && dialog.isAncestorOf(mui.getLastHoveredElement())) return;
+            if (shouldKeepDialogOpenOnTextFieldBlur(event)) return;
             hide();
         });
         textField.setTextResponder(this::onSearchWordChanged);
@@ -192,20 +199,10 @@ public class SearchComponent<T> extends BindableUIElement<T> {
                     layout.heightAuto();
                     layout.positionType(TaffyPosition.ABSOLUTE);
                 })
-                .addChildren(listView = new UIElement().layout(layout -> layout.paddingAll(2)), scrollerView = new ScrollerView())
+                .addChildren(listView = new UIElement().layout(layout -> layout.paddingAll(2)), scrollerView = new VirtualScrollerView<>())
                 .style(style -> style.zIndex(1).backgroundTexture(Sprites.RECT_DARK))
                 .addEventListener(UIEvents.LAYOUT_CHANGED, e -> {
-                    var mui = getModularUI();
-                    if (mui != null) {
-                        var root = mui.ui.rootElement;
-                        e.currentElement.layout(layout -> {
-                            var x = this.getPositionX();
-                            var y = this.getPositionY();
-                            layout.left(x - root.getLayoutX());
-                            layout.top(y - root.getLayoutY() + this.getSizeHeight());
-                            layout.width(this.getSizeWidth());
-                        });
-                    }
+                    this.updateDialogPosition();
                     e.currentElement.adaptPositionToScreen();
                 })
                 .stopInteractionEventsPropagation();
@@ -220,6 +217,8 @@ public class SearchComponent<T> extends BindableUIElement<T> {
         scrollerView.viewPort.style(style -> style.backgroundTexture(IGuiTexture.EMPTY));
         scrollerView.viewPort.layout(layout -> layout.paddingAll(2));
         scrollerView.layout(layout -> layout.setFlexGrow(1));
+        scrollerView.setItemUIProvider(this::createItemUI);
+        scrollerView.setBeforeMountItems(candidateButtons::clear);
         scrollerView.setDisplay(false);
         scrollerView.viewContainer.addEventListener(UIEvents.LAYOUT_CHANGED, this::onScrollViewLayoutChanged);
         addChildren(preview, textField);
@@ -227,6 +226,12 @@ public class SearchComponent<T> extends BindableUIElement<T> {
         searchEngine = new SearchEngine<>(searchUI, this::onResultFound);
         internalSetup();
         dialog.markAsInternal();
+    }
+
+    @Override
+    protected void onRemoved() {
+        hide();
+        super.onRemoved();
     }
 
     protected void onMouseDown(UIEvent event) {
@@ -268,10 +273,18 @@ public class SearchComponent<T> extends BindableUIElement<T> {
     public void screenTick() {
         super.screenTick();
         updateCandidatesUI();
+        // Close the dropdown if the component moved on screen since it was opened (e.g. an ancestor
+        // ScrollerView scrolled). The dialog is anchored to root and isn't clipped by the scroller, so
+        // rather than let it float detached we dismiss it. Scrolling inside the dropdown's own list does
+        // not move the component, so it stays open then.
+        if (isOpen() && (Math.abs(getPositionX() - dialogAnchorX) > 0.5f || Math.abs(getPositionY() - dialogAnchorY) > 0.5f)) {
+            hide();
+        }
     }
 
     protected void onSearchWordChanged(String word) {
         candidates.clear();
+        scrollerView.scrollToTop();
         isCandidatesDirty.set(true);
         if (searchOnServer) {
             if (searchEvent != null) {
@@ -295,7 +308,7 @@ public class SearchComponent<T> extends BindableUIElement<T> {
         var candidates = new ArrayList<>(this.candidates);
         candidateButtons.clear();
         listView.clearAllChildren();
-        scrollerView.clearAllScrollViewChildren();
+        scrollerView.setItems(List.of());
         if (candidates.size() <= searchStyle.maxItemCount()) {
             // list view
             scrollerView.setDisplay(false);
@@ -308,16 +321,15 @@ public class SearchComponent<T> extends BindableUIElement<T> {
             listView.setDisplay(false);
             scrollerView.setDisplay(true);
             scrollerView.layout(layout -> layout.height(searchStyle.scrollerViewHeight()));
-            for (T candidate : candidates) {
-                scrollerView.addScrollViewChild(createItemUI(candidate));
-            }
+            scrollerView.setItems(candidates);
+            scrollerView.refreshVisibleItems(0, searchStyle.scrollerViewHeight());
         }
     }
 
     private UIElement createItemUI(T candidate) {
         var candidateUI = new UIElement().layout(layout -> layout.widthPercent(100));
         var overlayButton = new Button();
-        overlayButton.buttonStyle(style -> style.baseTexture(IGuiTexture.EMPTY)
+        overlayButton.buttonStyle(style -> style.baseTexture(Objects.equals(candidate, value) && searchStyle.showOverlay() ? ColorPattern.T_GRAY.rectTexture() : IGuiTexture.EMPTY)
                         .hoverTexture(searchStyle.showOverlay() ? ColorPattern.T_GRAY.rectTexture() : IGuiTexture.EMPTY)
                         .pressedTexture(searchStyle.showOverlay() ? ColorPattern.T_GRAY.rectTexture() : IGuiTexture.EMPTY))
                 .setOnClick(e -> {
@@ -370,7 +382,12 @@ public class SearchComponent<T> extends BindableUIElement<T> {
             var candidateUI = candidateUIProvider.apply(value);
             this.preview.addChild(candidateUI);
         }
-        textField.setText(value == null ? "" : searchUI.resultText(value));
+        // ⚠️ Only notifies when the CALLER is notifying. The text field's value listener is what
+        // drives the search, and SearchEngine drops the results of any search that is no longer the
+        // current one — so a display sync that notified (a passive update from the value's supplier,
+        // of which there is one per tick when a configurator forces updates) silently superseded
+        // whatever search was in flight and left the dropdown holding that one entry, or nothing.
+        textField.setText(value == null ? "" : searchUI.resultText(value), notify);
 
         // notify
         if (notify) {
@@ -389,6 +406,32 @@ public class SearchComponent<T> extends BindableUIElement<T> {
 
     }
 
+    private boolean shouldKeepDialogOpenOnTextFieldBlur(UIEvent event) {
+        if (event.relatedTarget != null && dialog.isAncestorOf(event.relatedTarget)) {
+            return true;
+        }
+
+        var mui = getModularUI();
+        if (mui == null || !isOpen() || !dialog.isMouseOver(mui.getLastMouseDownX(), mui.getLastMouseDownY())) {
+            return false;
+        }
+        if (mui.getLastMouseDownButton() == 0) {
+            return true;
+        }
+        hideAfterDialogTick();
+        return true;
+    }
+
+    private void hideAfterDialogTick() {
+        var generation = ++delayedHideGeneration;
+        dialog.addEventListener(UIEvents.TICK, event -> {
+            dialog.removeEventListener(UIEvents.TICK, event.currentListener);
+            if (generation == delayedHideGeneration && isOpen() && !textField.isFocused()) {
+                hide();
+            }
+        });
+    }
+
     public SearchComponent<T> searchStyle(Consumer<SearchStyle> style) {
         style.accept(searchStyle);
         return this;
@@ -404,26 +447,56 @@ public class SearchComponent<T> extends BindableUIElement<T> {
         return this.dialog.getParent() != null;
     }
 
+    protected void updateDialogPosition() {
+        var mui = getModularUI();
+        if (mui != null) {
+            var root = mui.ui.rootElement;
+            var worldPos = this.localToWorld(new Vector2f(getPositionX(), getPositionY() + getSizeHeight()));
+            var pos = root.worldToLocalLayoutOffset(worldPos);
+            this.dialog.layout(layout -> {
+                layout.left(pos.x);
+                layout.top(pos.y);
+                layout.width(Math.max(this.getSizeWidth(), 50));
+            });
+            this.dialogAnchorX = getPositionX();
+            this.dialogAnchorY = getPositionY();
+        }
+    }
+
+    /**
+     * Opens the dropdown <b>on the whole catalogue</b>, with the chosen value's text selected.
+     *
+     * <p>⚠️ The search is driven by the text field's value listener and by nothing else, so a box
+     * that has just been opened has never searched: its dialog holds whatever the last query left,
+     * which — because {@link #hide} writes the chosen value back into the field, and that write
+     * searches — is the single entry matching the value already chosen. On a fresh box it is nothing
+     * at all. Either way what the author sees is an empty or one-line dropdown on a list of
+     * hundreds, and the only way out is to type a character; that is what was reported.
+     *
+     * <p>Nothing here touches the <b>value</b>, and the text is left as it was: selecting it is what
+     * makes the first keystroke replace the old name instead of appending to it, which is how every
+     * other type-to-filter box behaves. Closing without picking anything restores the text
+     * ({@link #hide}), so opening a box to see what there is costs the author nothing.
+     */
     public void show() {
         if (this.isOpen()) {
             return;
         }
+        delayedHideGeneration++;
         var mui = getModularUI();
         if (mui != null) {
             var root = mui.ui.rootElement;
-            root.addChild(dialog.layout(layout -> {
-                var x = this.getPositionX();
-                var y = this.getPositionY();
-                layout.left(x - root.getLayoutX());
-                layout.top(y - root.getLayoutY() + this.getSizeHeight());
-                layout.width(this.getSizeWidth());
-            }));
+            root.addChild(dialog);
+            updateDialogPosition();
         }
         preview.setDisplay(false);
         textField.setDisplay(true);
+        textField.setSelection(0, textField.getValue().length());
+        onSearchWordChanged("");
     }
 
     public void hide() {
+        delayedHideGeneration++;
         var parent = this.dialog.getParent();
         if (parent != null) {
             this.dialog.blur();

@@ -23,6 +23,7 @@ public class ConstantNodeEditorElement extends ModelElement {
 
     public ConstantNodeEditorElement(ConstantNodeModel constantNodeModel) {
         this.constantNodeModel = constantNodeModel;
+        addClass("__constant-node-editor__");
         editor = new FieldValueInspector();
         addChild(editor);
     }
@@ -40,6 +41,7 @@ public class ConstantNodeEditorElement extends ModelElement {
         if (editor != null && constantNodeModel instanceof IFieldValueConfigurable configurable) {
             if (Objects.equals(lastConstant, constantNodeModel.getConstant())) return;
             lastConstant = constantNodeModel.getConstant();
+            if (getGraphView() != null) editor.setHistoryStack(getGraphView().getHistoryStack());
             editor.loadValueField(configurable);
         }
     }

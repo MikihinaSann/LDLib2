@@ -6,8 +6,8 @@ import com.lowdragmc.lowdraglib2.gui.texture.FluidStackTexture;
 import com.lowdragmc.lowdraglib2.gui.texture.IGuiTexture;
 import com.lowdragmc.lowdraglib2.gui.texture.ItemStackTexture;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
-import com.lowdragmc.lowdraglib2.gui.ui.elements.ItemSlot;
 import com.lowdragmc.lowdraglib2.gui.ui.utils.UIElementProvider;
+import com.lowdragmc.lowdraglib2.utils.LocalizationUtils;
 import com.lowdragmc.lowdraglib2.utils.search.IResultHandler;
 import lombok.Setter;
 import lombok.experimental.Accessors;
@@ -15,21 +15,18 @@ import net.minecraft.MethodsReturnNonnullByDefault;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
-import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.SpawnEggItem;
-import net.minecraft.world.level.block.Block;
-import net.minecraft.world.level.material.Fluid;
 import net.minecraft.world.level.material.Fluids;
-import dev.architectury.fluid.FluidStack;
 
 import org.jetbrains.annotations.Nullable;
 import javax.annotation.ParametersAreNonnullByDefault;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -39,6 +36,8 @@ public class RegistrySearchComponent<T> extends SearchComponentConfigurator<T> {
     public final Registry<T> registry;
     @Setter @Accessors(chain = true)
     protected Predicate<T> filter = Predicates.alwaysTrue();
+    @Setter @Accessors(chain = true)
+    protected Function<T, String> translator = null;
 
     public RegistrySearchComponent(String name, Supplier<T> supplier, Consumer<T> onUpdate,T defaultValue, boolean forceUpdate, Registry<T> registry, UIElementProvider<T> uiProvider) {
         super(name, supplier, onUpdate, new SearchComponentConfigurator.ISearchConfigurator<>() {
@@ -65,12 +64,19 @@ public class RegistrySearchComponent<T> extends SearchComponentConfigurator<T> {
 
     @Override
     public void search(String word, IResultHandler<T> searchHandler) {
+        if (this.registry == null) return;
         var lowerWord = word.toLowerCase();
         for (var key : registry.keySet()) {
             if (Thread.currentThread().isInterrupted()) return;
-            if (!filter.test(registry.get(key))) continue;
+            var value = registry.get(key);
+            if (!filter.test(value)) continue;
             if (key.toString().toLowerCase().contains(lowerWord)) {
-                searchHandler.acceptResult(registry.get(key));
+                searchHandler.acceptResult(value);
+                continue;
+            }
+            // translate key to translatable component
+            if (translator != null && translator.apply(value).toLowerCase().contains(lowerWord)) {
+                searchHandler.acceptResult(value);
             }
         }
     }
@@ -82,6 +88,8 @@ public class RegistrySearchComponent<T> extends SearchComponentConfigurator<T> {
                     item -> Component.translatable(item.getDescriptionId())
             ));
 
+
+            setTranslator(item -> LocalizationUtils.format(item.getDescriptionId()));
         }
     }
 
@@ -92,6 +100,8 @@ public class RegistrySearchComponent<T> extends SearchComponentConfigurator<T> {
                     block -> Component.translatable(block.getDescriptionId())
             ));
 
+
+            setTranslator(block -> LocalizationUtils.format(block.getDescriptionId()));
         }
     }
 
@@ -108,6 +118,8 @@ public class RegistrySearchComponent<T> extends SearchComponentConfigurator<T> {
             ));
             setFilter(fluid -> fluid != Fluids.EMPTY && fluid.isSource(fluid.defaultFluidState()));
 
+
+            setTranslator(fluid -> LocalizationUtils.format(fluid.defaultFluidState().createLegacyBlock().getBlock().getDescriptionId()));
         }
     }
 
@@ -122,6 +134,8 @@ public class RegistrySearchComponent<T> extends SearchComponentConfigurator<T> {
                     net.minecraft.world.entity.EntityType::getDescription
             ));
 
+
+            setTranslator(entityType -> LocalizationUtils.format(entityType.getDescriptionId()));
         }
 
         @Nullable
@@ -132,5 +146,4 @@ public class RegistrySearchComponent<T> extends SearchComponentConfigurator<T> {
             return null;
         }
     }
-
 }
