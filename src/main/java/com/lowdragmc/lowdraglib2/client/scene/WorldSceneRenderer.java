@@ -955,12 +955,12 @@ public abstract class WorldSceneRenderer {
         }
 
         if (block != Blocks.AIR && state.getRenderShape() != INVISIBLE) {
-            var model = brd.getBlockModel(state);
-            var modelData = com.lowdragmc.lowdraglib2.client.renderer.ModelData.EMPTY;
-            modelData = modelData;
             randomSource.setSeed(state.getSeed(pos));
-            modelData = modelData;
-            if (java.util.Collections.singleton(layer).contains(layer)) {
+            // Vanilla renderBatched has no per-layer filter (the NeoForge signature took
+            // modelData + RenderType). Vanilla block states are single-layer anyway, so gate
+            // on the state's own chunk render type — without this every pass draws every quad,
+            // and e.g. cutout grass lands in the solid buffer where transparent texels go black.
+            if (ItemBlockRenderTypes.getChunkRenderType(state) == layer) {
                 poseStack.pushPose();
                 poseStack.translate(pos.getX(), pos.getY(), pos.getZ());
                 brd.renderBatched(state, pos, world, poseStack, wrapperBuffer, false, randomSource);
