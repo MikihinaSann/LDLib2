@@ -31,7 +31,9 @@ public abstract class WorldLoaderMixin {
         Platform.RESOURCE_MANAGER = resourceManager;
     }
 
-    @Inject(method = "lambda$load$0", at = @At(value = "HEAD"))
+    // Fabric keeps intermediary names for synthetic lambdas (Mojmap doesn't remap them):
+    // method_42096 is WorldLoader.load's `handle` callback that closes the resource manager.
+    @Inject(method = "method_42096", at = @At(value = "HEAD"))
     private static void ldlib2$closeResourceManager(CloseableResourceManager closeableresourcemanager, ReloadableServerResources p_214370_, Throwable p_214371_, CallbackInfo ci) {
         Platform.RESOURCE_MANAGER = null;
     }
